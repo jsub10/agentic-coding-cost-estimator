@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 import params as params_module
@@ -151,3 +153,72 @@ def test_step_ten_is_the_only_source_of_repo_scope_tokens():
         active = 10 in scenarios.SCENARIO_STEPS[name]
         tokens = scenarios.SCENARIO_POLICY[name]["repo_scope_tokens"]
         assert (tokens > 0) == active, name
+
+
+# --- The shipped example configuration ------------------------------------------------
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+EXAMPLE_CONFIG = ROOT / "example-config.json"
+
+
+def _cli():
+    """Load the repository's __main__.py by path.
+
+    A plain ``import __main__`` picks up pytest's own entry point under a test run, not
+    this project's CLI.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("estimator_cli", ROOT / "__main__.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _example_config():
+    import json
+    return json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+
+
+def test_the_example_config_names_only_real_parameters():
+    """A shipped example that raises on use would be worse than none at all.
+
+    Every non-comment key must resolve, either in the global registry or as
+    scenario.parameter. This is the check that catches a parameter being renamed without
+    the example being updated with it.
+    """
+    cli = _cli()
+    top, scoped = cli.split_overrides(
+        f"{name}={value}" for name, value in _example_config().items()
+        if not name.startswith("_"))
+
+    for name in top:
+        params_module.param_spec(name)                      # raises if unknown
+    for dotted in scoped:
+        scenario, _, leaf = dotted.partition(".")
+        scenarios.scenario_policy_spec(scenario, leaf)      # raises if unknown
+
+
+def test_the_example_config_reproduces_the_shipped_defaults():
+    """The file says so in its own header, so it had better be true."""
+    cli = _cli()
+    config = cli.load_config(
+        EXAMPLE_CONFIG)
+    top, scoped = cli.split_overrides(f"{k}={v}" for k, v in config.items())
+
+    applied = params_module.apply_overrides(params_module.default_params(), top)
+    assert applied == params_module.default_params()
+
+    policy = scenarios.apply_scenario_overrides(
+        scenarios.default_scenario_policy(), scoped)
+    assert policy == scenarios.default_scenario_policy()
+
+
+def test_config_comments_are_skipped_but_typos_are_not():
+    """Underscore keys are declared non-parameters; anything else unknown still raises."""
+    cli = _cli()
+    assert cli.load_config.__doc__ and "underscore" in cli.load_config.__doc__.lower()
+    config = _example_config()
+    assert any(name.startswith("_") for name in config), "the example should be annotated"
+    assert not any(name.startswith("_") for name in cli.load_config(
+        EXAMPLE_CONFIG))

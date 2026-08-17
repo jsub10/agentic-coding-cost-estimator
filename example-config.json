@@ -1,0 +1,84 @@
+{
+  "_about": [
+    "Example configuration. Copy this file, edit it, and run:",
+    "    python __main__.py --config example-config.json",
+    "Any key beginning with an underscore is a comment and is ignored. Every other key",
+    "must name a real parameter -- run --list-params to see all 56 with their ranges and",
+    "provenance. An unknown name raises rather than being skipped.",
+    "Values shown here are the shipped defaults, so running this file unedited reproduces",
+    "the standard output. Change the ones you know and delete the rest."
+  ],
+
+  "_1_prices": [
+    "Start here. These are PRICE parameters -- organisational facts you already know,",
+    "and the cheapest thing to get right. SPEC.md section 8."
+  ],
+  "w": 150.0,
+  "w_inc": 400.0,
+  "c": 3.0,
+
+  "_2_portfolio": [
+    "How many stories, by oracle closure rather than by size: can a machine decide",
+    "whether this is correct? Concurrent and ordering-sensitive code is Hard by",
+    "construction however well specified. SPEC.md section 2."
+  ],
+  "n_routine": 80,
+  "n_standard": 56,
+  "n_hard": 24,
+
+  "_3_measure_next": [
+    "The four inputs to the escape equation, in the order the README recommends",
+    "replacing them. m comes free from one mutation-testing run (m = 1 - mutation",
+    "score); q_rev comes from the sampled-review stream and is emphatically not zero;",
+    "d is the failure rate of fresh implementations divided by the mutation score.",
+    "rho is NOT measured -- it is read off the menu in SPEC.md section 3.6 according to",
+    "how you have structured verification, and it is set per scenario below."
+  ],
+  "m_scored": 0.06,
+  "q_rev": 0.35,
+  "d_base": 0.30,
+  "d_specced": 0.24,
+
+  "_4_human_time": [
+    "Time-tracking on one instrumented epic. S is criteria-authoring hours per story,",
+    "R review hours per reviewed story, I hours to resolve one escaped defect.",
+    "Worth measuring: in scenarios C and D+, S is the second-largest source of",
+    "variance after escaped defects. SPEC.md section 5."
+  ],
+  "S_manual": 3.0,
+  "S_oracled": 1.0,
+  "R_large": 2.5,
+  "R_gated": 1.5,
+  "I": 12.0,
+
+  "_5_scheduling": [
+    "b is how many human touches you handle in one scheduled session. b = 1 means",
+    "every touch arrives as an interruption -- try it and see what it costs."
+  ],
+  "b": 6,
+  "s": 0.25,
+
+  "_6_reporting": [
+    "FTE is quoted against this duration. It enters no cost. The saving this model",
+    "reports is a headcount reduction at roughly constant duration, not a speed-up."
+  ],
+  "calendar_weeks": 26,
+  "hours_per_fte_week": 32.0,
+
+  "_7_per_scenario": [
+    "Per-scenario POLICY is addressed as scenario.parameter. The five scenario names",
+    "are execute_only, execute_decide, execute_deliver, all_three and",
+    "all_three_quality -- run --list-steps to see which process steps each activates.",
+    "These are the levers under discussion rather than things to measure."
+  ],
+  "all_three.f_base": 0.90,
+  "all_three.rho": 0.05,
+  "all_three.oracle_tokens": 760000000.0,
+
+  "_8_left_alone": [
+    "Deliberately not set here: the correlation parameters lambda_e, lambda_f and",
+    "p_cluster. They are the hardest to fit and need several epics of history. Until",
+    "you have that, treat the defaults as structural assumptions and probe them with",
+    "--sensitivity lambda_e rather than editing them here. SPEC.md section 8."
+  ]
+}

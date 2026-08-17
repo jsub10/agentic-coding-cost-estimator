@@ -33,8 +33,13 @@ python __main__.py --list-params         # all 56 parameters: value, range, kind
 python __main__.py --list-steps          # which of the ten steps each scenario activates
 python __main__.py --set w=200 --set b=1 # override anything; b=1 makes every touch an interruption
 python __main__.py --set all_three.oracle_tokens=900e6    # per-scenario policy
-python __main__.py --config mine.json    # a JSON object of the same overrides
+python __main__.py --config example-config.json           # a JSON object of the same overrides
 ```
+
+`example-config.json` ships with the repository. It is annotated — any key beginning with an
+underscore is a comment and is ignored, since JSON has no comment syntax — and it lists the
+parameters in the order worth replacing them, starting with the prices you already know. Run
+it unedited and you get the shipped defaults; copy it and change the ones you have measured.
 
 An unknown parameter name raises rather than defaulting, and an integer parameter refuses a
 fractional override rather than truncating it — silently accepting `A_max=5.5` would make a

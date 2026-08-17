@@ -8,7 +8,7 @@
     python __main__.py --deterministic          variance off; the published point estimates
     python __main__.py --list-params            every parameter, its range and provenance
     python __main__.py --set w=200 --set b=1    override any parameter
-    python __main__.py --config mine.json       override a batch of them
+    python __main__.py --config example-config.json   override a batch of them
 
 Reading a config file is the only I/O in the program, and it happens here rather than
 anywhere downstream: ``model.py`` and ``montecarlo.py`` do no I/O at all (CLAUDE.md §8).
@@ -73,7 +73,9 @@ def _add_configuration_arguments(parser):
                       help="override a parameter; repeatable. Per-scenario policy is "
                            "addressed as scenario.parameter, e.g. all_three.oracle_tokens")
     tune.add_argument("--config", metavar="FILE",
-                      help="JSON object of NAME: VALUE overrides, applied before --set")
+                      help="JSON object of NAME: VALUE overrides, applied before --set. Keys "
+                           "beginning with an underscore are comments. See "
+                           "example-config.json.")
     tune.add_argument("--sensitivity", metavar="PARAM",
                       help="sweep one parameter across its declared range and report the "
                            "effect on P50 and P95")
@@ -106,12 +108,23 @@ def split_overrides(pairs):
 
 
 def load_config(path):
-    """Read a JSON object of overrides. Raises rather than ignoring a malformed file."""
+    """Read a JSON object of overrides. Raises rather than ignoring a malformed file.
+
+    Keys beginning with an underscore are comments and are skipped. JSON has no comment
+    syntax and a configuration file is meant to be edited by hand, so the alternative is an
+    unannotated wall of numbers. This is the same convention ``tests/fixtures/*.json``
+    already uses for its ``_source`` and ``_note`` keys.
+
+    It is not a silent fallback (CLAUDE.md §8): an underscore prefix declares "not a
+    parameter", and any *other* unknown name still raises. A misspelled parameter cannot
+    slip through unless it is misspelled with a leading underscore.
+    """
     with open(path, encoding="utf-8") as handle:
         loaded = json.load(handle)
     if not isinstance(loaded, dict):
         raise SystemExit(f"{path}: expected a JSON object of NAME: VALUE overrides")
-    return {str(name): value for name, value in loaded.items()}
+    return {str(name): value for name, value in loaded.items()
+            if not str(name).startswith("_")}
 
 
 def resolve_configuration(args):
