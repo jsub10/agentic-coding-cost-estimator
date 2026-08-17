@@ -43,5 +43,22 @@
   },
   "variance_escape_share": 0.71,
   "variance_escape_tolerance": 0.08,
-  "_note_variance": "Was 0.72 before two fixes. The freeze held e_scale at its median (0.860) rather than its mean, and the chunked run used one continuous stream, so coupling between the baseline and frozen runs decayed as 1/n_chunks and most of the run was uncorrelated noise. Measured 70.9% at 150,000 iterations and 71.0% at 40,000, with a bootstrap standard error of 0.4 points."
+  "_note_variance": "Was 0.72 before two fixes. The freeze held e_scale at its median (0.860) rather than its mean, and the chunked run used one continuous stream, so coupling between the baseline and frozen runs decayed as 1/n_chunks and most of the run was uncorrelated noise. Measured 70.9% at 150,000 iterations and 71.0% at 40,000, with a bootstrap standard error of 0.4 points.",
+  "variance_by_scenario": {
+    "_source": "SPEC.md \u00a75 per-scenario decomposition table, measured at 150,000 iterations across seeds 7 and 21. Checked here at 40,000, where the two resolved sources are already stable, with bounds wide enough to cover the larger estimator error at that count.",
+    "escape": {
+      "execute_only": 0.7,
+      "execute_decide": 0.77,
+      "execute_deliver": 0.43,
+      "all_three": 0.71,
+      "all_three_quality": 0.46
+    },
+    "escape_tolerance": 0.06,
+    "criteria_hours_resolve_in": [
+      "execute_deliver",
+      "all_three_quality"
+    ],
+    "criteria_hours_share": 0.09,
+    "criteria_hours_tolerance": 0.04
+  }
 }

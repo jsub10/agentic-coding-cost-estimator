@@ -533,22 +533,36 @@ exceeds two of its own standard errors; otherwise it is named as unresolved. Rep
 estimator's own spread is ±0.7 points would be the same failure REVIEW.md S3-1 found in the original:
 publishing a number the model does not support.
 
-At the shipped parameters, scenario D at 40,000 iterations:
+**The decomposition is scenario-dependent, and quoting it for one scenario misleads.** At the shipped
+parameters, 150,000 iterations, reductions in the P50→P95 spread. A dash means the share did not exceed two of
+its own standard errors and so is not distinguishable from zero:
 
-| Source frozen | Reduction in P50→P95 spread | Standard error |
-|---|---|---|
-| **Escape (theta, clustering, Bernoulli draw)** | **~71%** | ±0.4 |
-| `m` | ~1% | ±0.5 |
-| `d` | ~1% | ±0.7 |
-| Criteria hours `S` | not resolved | ±0.7 |
-| `q_rev` | not resolved | ±0.2 |
-| Token `k_scale` | not resolved | ±0.3 |
-| Token trajectory (`A`, `L`) | not resolved | ±0.2 |
+| Source frozen | A | B | C | D | D+ |
+|---|---|---|---|---|---|
+| **Escape** (`theta`, clustering, Bernoulli draw) | **70%** | **77%** | **43%** | **71%** | **46%** |
+| Criteria hours `S` | — | — | **9%** | — | **9%** |
+| `q_rev` | ~1% | ~1% | — | — | — |
+| `d` | — | — | ~1% | ~1% | — |
+| `m` | — | — | — | — | — |
+| Token trajectory (`A`, `L`) | — | — | — | — | — |
+| Token `k_scale` | — | — | — | — | — |
 
-Escaped defects are essentially the entire uncertainty of this model. **Every other source is smaller than
-this estimator can resolve at 40,000 iterations** — which is a stronger and more honest statement than
-assigning each of them a spurious one percent. Raising the iteration count shrinks the standard errors as
-`1/sqrt(n)`; at 150,000 the second tier begins to separate. Nothing else comes close to escape at any count.
+Standard errors are ±0.2 to ±0.4 on escape and ±0.4 to ±0.6 on `S`. The `~1%` entries appear on one seed and
+not another even at 150,000 iterations, so they are at the edge of what this estimator resolves and should be
+read as "small" rather than as a number.
+
+Two things follow, and only the first was previously stated.
+
+**Escaped defects dominate in every scenario**, and by a wide margin in the four where the gate is either
+absent or carrying a normal escape rate. Nothing else comes close, at any iteration count.
+
+**But in C and D+ escape falls to 43–46%, and criteria authoring becomes the clear second driver at 9%.**
+This is not noise and it is not an artefact — it is the same arithmetic seen from the other end. C carries
+`S_manual` = 3.0, which makes criteria its single largest cost line at about $69,800; D+ has the lowest escape
+rate in the set at 0.89%, so the same fixed spread in `S` is a much larger fraction of a much smaller total.
+The reading is that **once the apparatus has suppressed escaped defects, the next largest uncertainty is how
+long it takes humans to write criteria** — which is a Step 2–3 question, and one of the cheaper parameters to
+measure (§8). A reader shown only scenario D would conclude there was nothing left to attack.
 
 ---
 
@@ -784,5 +798,6 @@ Record any change that moves a pinned figure, with the reason.
 | 2026-08-17 | **§3.5 — the epistemic lognormals restated as mean-preserving.** The table said "median = nominal" and the note beneath it said `mu = ln(nominal) − σ²/2`; those are different distributions and a builder had to pick one. The note governs, per CLAUDE.md §6. | None. The note was already what the pinned figures used. |
 | 2026-08-17 | **§5 — a third mean error found, of the S1-1 family, and CORRECTED.** `e_base` and `e_scale` are both functions of the same `theta` and negatively correlated through it, so centring each one individually does not make their product mean-preserving. `E[e_run]` sat 1.95% below derived `e` in D and D+ and 2.71% below in C; A and B were exact because `f` = 0 there. The covariance term is 3-4x the `f` Jensen term it was previously lumped in with. REVIEW.md S1-1 caught the two marginal mean errors and missed this one. Corrected by a scalar `gamma = target / shifted`, evaluated once per scenario: Cameron-Martin turns `E[g(Z)exp(lambda_e Z - lambda_e^2/2)]` into `E[g(Z + lambda_e)]`, so the exponential leaves the integrand and no quadrature is needed in the hot loop. `gamma` is 1.0000 in A and B, 1.0279 in C, 1.0199 in D and D+. It removes the `f` Jensen term at the same time. | **None to the deterministic pins**, which do not use `theta`, and none to A or B, where `gamma` is exactly 1. The Monte Carlo P50s for C, D and D+ move by under 0.6% and their P95s by under 1.4%, all still inside the 2% fixture tolerance. The mean-preservation test is tightened from 4% to **0.5% for all five scenarios**. |
 | 2026-08-17 | **§5 — the variance decomposition had a noise floor larger than every share it was measuring, from broken common random numbers.** Two causes, both silent. NumPy's `Generator.geometric` consumes a *variable* number of stream positions as `p` varies, and `Generator.binomial` switches algorithm around `n·p = 30` and does likewise, so a perturbed draw desynchronised every draw after it. And the chunked run used one continuous stream, so any residual desynchronisation in chunk *k* corrupted every later chunk: measured coupling was exactly `1/n_chunks`, meaning at three chunks two thirds of the run was uncorrelated noise. Freezing `d` visibly moved criteria hours and generation tokens, which `d` cannot affect. Fixed by inverse-CDF draws for the geometric and for the reviewed and escaped counts, one generator per draw site, and independent seeding per chunk. | Noise floor **±2.0 -> ±0.8** percentage points at 40,000 iterations. Escape share 71.6% -> **71.0%**, the difference being noise that had been read as signal. Monte Carlo figures shift by sampling error only, since the draws are the same distributions from a different stream; all fixture pins still hold. Deterministic pins untouched. |
+| 2026-08-17 | **§5 — the variance decomposition restated per scenario, and the README corrected.** The single-scenario table generalised scenario D to the whole model, which is wrong: escape dominates everywhere but ranges from 43% to 77%, and in C and D+ it falls to 43-46% while criteria authoring `S` resolves as a clear second driver at 9%. C carries the unaided `S_manual` = 3.0, making criteria its largest cost line at about $69,800; D+ has the lowest escape rate in the set at 0.89%, so the same spread in `S` is a larger share of a smaller total. The reading is that once the apparatus has suppressed escaped defects, the next largest uncertainty is criteria-authoring time — a Step 2-3 question, and among the cheaper parameters to measure (§8). Found by running the full report rather than by inspection; a reader shown only D would conclude there was nothing left to attack. | No figure moves. It corrects a claim in README.md that every non-escape source is below what the estimator resolves, which held for D and not for C or D+. Pinned by `test_the_decomposition_is_scenario_dependent`. |
 | 2026-08-17 | **§5 — every variance share now carries the standard error of its own estimator**, by paired bootstrap over the iteration axis at no extra simulation cost. At 40,000 iterations only escape clears two standard errors; every other source is below what the estimator can resolve. The report names them as unresolved instead of quoting them. | None to any figure. It stops the report publishing numbers the model does not support — the failure REVIEW.md S3-1 found in the original, in a subtler form. |
 | 2026-08-17 | **§5 — the variance decomposition froze the escape source at its median rather than its mean.** Setting `theta = 0` leaves `e_scale = exp(-lambda_e^2/2)` = 0.860, so the frozen run sat 14% below the derived escape rate and the freeze changed the level as well as the spread. Found while correcting the covariance term; same mean-versus-median family. A frozen escape source now sets `e_scale = 1` and `gamma = 1` explicitly. | Moves the reported escape variance share, which was measured against a contaminated counterfactual. Everything else is unaffected: no other freeze target had this problem, and no reported cost changes. |

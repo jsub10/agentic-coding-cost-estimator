@@ -73,8 +73,8 @@ SCENARIO D — All three phases
   Tokens    3.69B  ($11,100)                                   share    14.8%
   Hours     347   (criteria 160, spec 80, review 24, arch 10, switch 10, restr 14, incid 46)
   Escapes   e = 2.4%   expected 3.8 stories   fallback 0.4 stories
-  Variance  escape 71% ±0.4
-            below the estimator's own noise, so indistinguishable from zero: m, d, S, ...
+  Variance  escape 71% ±0.4  m 1% ±0.5
+            below the estimator's own noise, so indistinguishable from zero: d, k_scale, q_rev, tokens, S
             (not a partition; shares do not sum to 100%)
 ```
 
@@ -82,7 +82,26 @@ Four things to look at, in order of how much they should change your decision.
 
 **The P95, not the P50.** The distribution is right-skewed and the P50 is the number that will be quoted back at you. What matters is whether the recommendation survives its own bad case — and **scenario D's P95 ($120,000) sits below scenario A's median ($197,600)**. Note also that D+ costs more at the P50 and *less* at the P95: quality investment buys tail reduction, not expected-value reduction.
 
-**The variance decomposition.** Escaped defects account for about 71% of the P50→P95 range. Every other source — all parameter uncertainty, all token trajectory noise — is smaller than the estimator can resolve at 40,000 iterations, and the report says so rather than quoting each of them a spurious one percent. Each share carries the standard error of its own estimator, from a paired bootstrap; raising `--iterations` shrinks those as `1/sqrt(n)`. These are one-at-a-time freezes on a non-linear model, so they are not a partition and do not sum to 100%.
+**The variance decomposition, and read it per scenario.** Escaped defects dominate everywhere, but not by the
+same margin, and the second driver is not the same either:
+
+| Source frozen | A | B | C | D | D+ |
+|---|---|---|---|---|---|
+| **Escape** | **70%** | **77%** | **43%** | **71%** | **46%** |
+| Criteria hours `S` | — | — | **9%** | — | **9%** |
+
+A dash means the share did not clear two standard errors of its own estimator and so is not distinguishable
+from zero. Every share is printed with that standard error, from a paired bootstrap over the iteration axis,
+and the report names unresolved sources rather than quoting each a spurious one percent. Raising
+`--iterations` shrinks the errors as `1/sqrt(n)`.
+
+**In C and D+, escape falls to 43–46% and criteria authoring becomes the clear second driver.** C carries the
+unaided `S_manual` = 3.0, which makes criteria its largest single cost line; D+ has the lowest escape rate in
+the set, so the same spread in `S` is a larger share of a smaller total. Once the apparatus has suppressed
+escaped defects, **the next largest uncertainty is how long it takes humans to write criteria** — and that is
+one of the cheaper parameters to measure. Quoting scenario D alone would hide this.
+
+These are one-at-a-time freezes on a non-linear model, so they are not a partition and do not sum to 100%.
 
 **The token share.** It rises as total cost falls, from about 1.3% to about 38%. This is the correct
 direction. Do not govern to a token budget: the model will show you that underspending on tokens is the more

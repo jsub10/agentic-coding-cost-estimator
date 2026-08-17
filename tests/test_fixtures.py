@@ -182,3 +182,54 @@ def test_apparatus_reconciles_for_the_quality_scenario():
     assert result["generation_tokens"] == pytest.approx(2557e6, rel=0.005)
     assert result["apparatus_tokens"] == pytest.approx(7878e6, rel=0.001)
     assert result["total_tokens"] == pytest.approx(10.44e9, abs=0.01e9)
+
+
+@pytest.fixture(scope="module")
+def decomposed():
+    """One decomposition per scenario, shared by the tests below.
+
+    Eight simulation runs per scenario, so it is worth doing once rather than per test.
+    """
+    params = params_module.default_params()
+    return {name: montecarlo.run_scenario(name, params, iterations=40_000, seed=7,
+                                          decompose=True)
+            for name in NAMES}
+
+
+def test_the_decomposition_is_scenario_dependent(decomposed):
+    """SPEC.md §5: escape dominates everywhere, but the second driver is not the same.
+
+    The finding this pins is that quoting scenario D alone misleads. In C and D+ escape
+    falls to 43-46% and criteria authoring resolves as a clear second driver at about 9%,
+    because C carries the unaided S_manual = 3.0 and D+ has the lowest escape rate in the
+    set. Documented in SPEC.md §5 and in the README.
+
+    Run at 40,000 rather than the 150,000 the table was measured at, to keep the suite
+    quick; the two resolved sources are already stable there, and the bounds are widened to
+    cover the larger estimator error.
+    """
+    pinned = MONTE_CARLO["variance_by_scenario"]
+    for name, expected in pinned["escape"].items():
+        result = decomposed[name]
+        share = result["variance"]["escape"]
+        assert share == pytest.approx(expected, abs=pinned["escape_tolerance"]), (
+            f"{name}: escape share {share:.3f} against a pinned {expected}")
+
+        criteria = result["variance"]["S"]
+        error = result["variance_error"]["S"]
+        resolved = abs(criteria) > 2.0 * error
+        should_resolve = name in pinned["criteria_hours_resolve_in"]
+        assert resolved == should_resolve, (
+            f"{name}: criteria hours {'did not resolve' if should_resolve else 'resolved'} "
+            f"unexpectedly, at {criteria:.3f} +/- {error:.3f}")
+        if should_resolve:
+            assert criteria == pytest.approx(pinned["criteria_hours_share"],
+                                             abs=pinned["criteria_hours_tolerance"]), name
+
+
+def test_escape_dominates_every_scenario_even_where_it_is_weakest(decomposed):
+    """SPEC.md §5: nothing else comes close to escape, in any scenario."""
+    for name in NAMES:
+        shares = decomposed[name]["variance"]
+        runner_up = max(v for source, v in shares.items() if source != "escape")
+        assert shares["escape"] > 3.0 * runner_up, name
