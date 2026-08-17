@@ -68,11 +68,13 @@ with the implementation. **Better specifications alone do not buy independence.*
 ## Reading the output
 
 ```
-SCENARIO D — All three phases
-  Cost      P50  $68,800    P80  $85,000    P95 $120,000      P95/P50  1.74
-  Tokens    3.69B  ($11,100)                                   share    14.8%
-  Hours     347   (criteria 160, spec 80, review 24, arch 10, switch 10, restr 14, incid 46)
-  Escapes   e = 2.4%   expected 3.8 stories   fallback 0.4 stories
+D. Decide + Execute + Deliver
+  Cost      P50     $69,097  P80     $84,918  P95    $121,930   P95/P50  1.76
+  Tokens      3.71B      $11,049                                share   14.8%
+  Hours         351  0.42 FTE over 26 weeks                     stories   160
+  Escapes   e =  2.40%  3.8 stories escape                      fallback   0.7
+  Breakdown at P50:
+    tokens $11,049  criteria $23,263  review $3,600  incidents $9,600  spec $12,000  arch $1,500  switch $1,506  fallback $0  restr $2,030
   Variance  escape 71% ±0.4  m 1% ±0.5
             below the estimator's own noise, so indistinguishable from zero: d, k_scale, q_rev, tokens, S
             (not a partition; shares do not sum to 100%)
@@ -80,7 +82,12 @@ SCENARIO D — All three phases
 
 Four things to look at, in order of how much they should change your decision.
 
-**The P95, not the P50.** The distribution is right-skewed and the P50 is the number that will be quoted back at you. What matters is whether the recommendation survives its own bad case — and **scenario D's P95 ($120,000) sits below scenario A's median ($197,600)**. Note also that D+ costs more at the P50 and *less* at the P95: quality investment buys tail reduction, not expected-value reduction.
+**The P95, not the P50.** The distribution is right-skewed and the P50 is the number that will be quoted back
+at you. What matters is whether the recommendation survives its own bad case — and **scenario D's P95
+($121,930) sits below scenario A's median ($197,249)**. Note also that D+ costs more at the P50 and *less* at
+the P95: quality investment buys tail reduction, not expected-value reduction. (Figures from the run above, at
+40,000 iterations and seed 7. They reproduce the briefing set's published $120,000 and $197,600 to within
+Monte Carlo error; `SPEC.md` §6 pins the published values.)
 
 **The variance decomposition, and read it per scenario.** Escaped defects dominate everywhere, but not by the
 same margin, and the second driver is not the same either:

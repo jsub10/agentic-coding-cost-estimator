@@ -44,8 +44,8 @@ def test_theta_is_shared_within_a_run(name, params):
     *count* would collapse to the binomial ``n*e*(1-e)``. Because theta is shared, runs are
     heavily over-dispersed instead.
 
-    Measured over-dispersion at the shipped parameters is 21.7x in A, 17.7x in B, 7.2x in C,
-    6.3x in D and 2.9x in D+. Drawing theta with shape ``(iterations, n_stories)`` gives
+    Measured over-dispersion at the shipped parameters is 22.4x in A, 18.3x in B, 7.5x in C,
+    6.5x in D and 3.0x in D+. Drawing theta with shape ``(iterations, n_stories)`` gives
     1.00x. The threshold sits at 2.5x, which every scenario clears and the bug cannot.
     """
     scenario = resolved(name, params)
