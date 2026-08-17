@@ -528,15 +528,26 @@ def test_no_mean_is_reported_for_a_cost(params):
 
 
 def test_epistemic_and_aleatory_uncertainty_are_independently_switchable(params):
-    """§3.5: parameter uncertainty and the repo common factor are different quantities."""
-    full = montecarlo.run_scenario("all_three", params, iterations=20_000, seed=7)
-    aleatory = montecarlo.run_scenario("all_three", params, iterations=20_000, seed=7,
+    """§3.5: parameter uncertainty and the repo common factor are different quantities.
+
+    §6: switching the parameter table off narrows D's P95 by about 1% — correlated escape
+    dominates so completely that our ignorance of the parameters barely registers.
+
+    Run at 200,000 iterations, which §6 requires for this comparison. The effect is about
+    1% and the sampling error on a P95 at 20,000 iterations is larger than that, so the
+    ordering flips on two seeds in three at that count. Asserting the direction cheaply
+    would be asserting noise.
+    """
+    full = montecarlo.run_scenario("all_three", params, iterations=200_000, seed=7)
+    aleatory = montecarlo.run_scenario("all_three", params, iterations=200_000, seed=7,
                                        uncertainty="aleatory")
-    assert aleatory["percentiles"]["total"]["p95"] < full["percentiles"]["total"]["p95"]
-    # §6: parameter uncertainty adds under 2% to D's P95, because correlated escape already
-    # dominates. A result worth reporting rather than assuming.
     ratio = full["percentiles"]["total"]["p95"] / aleatory["percentiles"]["total"]["p95"]
-    assert 1.0 < ratio < 1.05
+    assert ratio > 1.0, "epistemic draws can only widen the distribution"
+    assert ratio < 1.02, "§6: parameter uncertainty adds under 2% to D's P95"
+
+    # The two modes must genuinely differ in what they draw, not merely in their label.
+    assert full["uncertainty"] == "full" and aleatory["uncertainty"] == "aleatory"
+    assert full["percentiles"]["total"]["p95"] != aleatory["percentiles"]["total"]["p95"]
 
 
 def test_switching_all_uncertainty_off_reproduces_the_deterministic_pass(params):

@@ -73,14 +73,16 @@ SCENARIO D — All three phases
   Tokens    3.69B  ($11,100)                                   share    14.8%
   Hours     347   (criteria 160, spec 80, review 24, arch 10, switch 10, restr 14, incid 46)
   Escapes   e = 2.4%   expected 3.8 stories   fallback 0.4 stories
-  Variance  escape ~72% | everything else individually under 2% (not a partition)
+  Variance  escape 71% ±0.4
+            below the estimator's own noise, so indistinguishable from zero: m, d, S, ...
+            (not a partition; shares do not sum to 100%)
 ```
 
 Four things to look at, in order of how much they should change your decision.
 
 **The P95, not the P50.** The distribution is right-skewed and the P50 is the number that will be quoted back at you. What matters is whether the recommendation survives its own bad case — and **scenario D's P95 ($120,000) sits below scenario A's median ($197,600)**. Note also that D+ costs more at the P50 and *less* at the P95: quality investment buys tail reduction, not expected-value reduction.
 
-**The variance decomposition.** Escaped defects account for about 72% of the P50→P95 range; every other source — including all parameter uncertainty and all token trajectory noise — is individually under 2%. These are one-at-a-time freezes on a non-linear model, so they are not a partition and do not sum to 100%.
+**The variance decomposition.** Escaped defects account for about 71% of the P50→P95 range. Every other source — all parameter uncertainty, all token trajectory noise — is smaller than the estimator can resolve at 40,000 iterations, and the report says so rather than quoting each of them a spurious one percent. Each share carries the standard error of its own estimator, from a paired bootstrap; raising `--iterations` shrinks those as `1/sqrt(n)`. These are one-at-a-time freezes on a non-linear model, so they are not a partition and do not sum to 100%.
 
 **The token share.** It rises as total cost falls, from about 1.3% to about 38%. This is the correct
 direction. Do not govern to a token budget: the model will show you that underspending on tokens is the more

@@ -28,10 +28,16 @@ CHUNK_ELEMENTS = 2_000_000
 
 
 def _chunk_size(scenario, iterations: int) -> int:
-    """Iterations per block, so the widest per-implementation array stays bounded."""
-    widest = max(scenario["n_stories"][cls] * scenario["N_impl"][cls]
-                 for cls in scenario["n_stories"]) or 1
-    return max(1, min(iterations, CHUNK_ELEMENTS // widest))
+    """Iterations per block, so the widest array in a chunk stays bounded.
+
+    Two allocations compete: the per-implementation draws, shaped
+    ``(chunk, stories_in_class, N_impl)``, and the per-story uniform matrices behind the
+    reviewed and escaped counts, shaped ``(chunk, n_stories)`` each.
+    """
+    widest_class = max(scenario["n_stories"][cls] * scenario["N_impl"][cls]
+                       for cls in scenario["n_stories"]) or 1
+    per_story = 2 * sum(scenario["n_stories"].values())
+    return max(1, min(iterations, CHUNK_ELEMENTS // max(widest_class, per_story, 1)))
 
 
 def _collect(params, scenario, iterations, seed, uncertainty, frozen):
@@ -40,13 +46,19 @@ def _collect(params, scenario, iterations, seed, uncertainty, frozen):
     Only run-level quantities survive the chunk boundary, so peak memory is set by one
     chunk's draws rather than by the whole run.
     """
-    rng = np.random.default_rng(seed)
     size = _chunk_size(scenario, iterations)
     parts: dict[str, list] = {}
     done = 0
+    index = 0
 
     while done < iterations:
         n = min(size, iterations - done)
+        # Each chunk is seeded independently from (seed, chunk index) rather than continuing
+        # one stream. A single stream lets any residual desynchronisation in one chunk
+        # corrupt every chunk after it, so the coupling the variance decomposition depends
+        # on decays as 1/n_chunks — at three chunks, two thirds of the run is noise
+        # (SPEC.md §5). Still fully deterministic given the seed.
+        rng = np.random.default_rng([seed, index])
         out = model.simulate(params, scenario, rng, n, uncertainty, frozen)
         columns = {f"cost.{term}": out["cost"][term]
                    for term in model.COST_TERMS + ("total",)}
@@ -59,6 +71,7 @@ def _collect(params, scenario, iterations, seed, uncertainty, frozen):
             parts.setdefault(name, []).append(
                 np.broadcast_to(np.asarray(value, dtype=np.float64), (n,)).copy())
         done += n
+        index += 1
 
     return {name: np.concatenate(chunks) for name, chunks in parts.items()}
 
@@ -78,25 +91,56 @@ def _spread(percentiles) -> float:
     return percentiles["total"]["p95"] - percentiles["total"]["p50"]
 
 
-def _decompose(params, scenario, iterations, seed, uncertainty, baseline_spread):
+def _decompose(params, scenario, iterations, seed, uncertainty, baseline_columns):
     """Freeze one random source at a time and measure the reduction in the spread.
 
     Common random numbers throughout: every run uses the same seed and draws in the same
     order, so the only thing that differs between the baseline and a frozen run is the
     source being frozen. Without that, the measurement is swamped by Monte Carlo noise.
 
-    The shares **do not sum to 100%** and must never be presented as though they did. The
-    model is non-linear, so freeze-one-at-a-time reductions are not a partition of the
-    variance (SPEC.md §5).
+    Returns ``(shares, standard_errors)``. The shares **do not sum to 100%** and must never
+    be presented as though they did: the model is non-linear, so freeze-one-at-a-time
+    reductions are not a partition of the variance (SPEC.md §5).
     """
+    baseline_spread = _spread(_percentiles(baseline_columns))
     if baseline_spread <= 0.0:
-        return {source: 0.0 for source in model.VARIANCE_SOURCES}
+        return ({source: 0.0 for source in model.VARIANCE_SOURCES},
+                {source: 0.0 for source in model.VARIANCE_SOURCES})
 
-    shares = {}
+    baseline_costs = baseline_columns["cost.total"]
+    shares, noise = {}, {}
     for source in model.VARIANCE_SOURCES:
         columns = _collect(params, scenario, iterations, seed, uncertainty, (source,))
         shares[source] = float(1.0 - _spread(_percentiles(columns)) / baseline_spread)
-    return shares
+        noise[source] = _reduction_standard_error(baseline_costs, columns["cost.total"],
+                                                 seed)
+    return shares, noise
+
+
+def _reduction_standard_error(baseline_costs, frozen_costs, seed, replicates=64):
+    """Standard error of one spread reduction, by paired bootstrap over the iteration axis.
+
+    The shares are differences of sample quantiles, so they carry sampling error of their
+    own — and at the shipped parameters that error is the same size as every share except
+    escape. Reporting "q_rev 1%" without saying the estimator's own spread is +/-0.8 points
+    would be the same failure REVIEW.md S3-1 found in the original: presenting a number the
+    model does not actually support.
+
+    Resampling the *same* iteration indices from both runs preserves the coupling between
+    them, so this measures the uncertainty in the reduction rather than the much larger
+    uncertainty in either spread on its own. Costs no extra simulation.
+    """
+    rng = np.random.default_rng([seed, 0xB007])
+    n = baseline_costs.size
+    reductions = np.empty(replicates, dtype=np.float64)
+    for replicate in range(replicates):
+        index = rng.integers(0, n, size=n)
+        base_p50, base_p95 = np.percentile(baseline_costs[index], [50.0, 95.0])
+        frozen_p50, frozen_p95 = np.percentile(frozen_costs[index], [50.0, 95.0])
+        spread = base_p95 - base_p50
+        reductions[replicate] = (1.0 - (frozen_p95 - frozen_p50) / spread
+                                 if spread > 0.0 else 0.0)
+    return float(reductions.std(ddof=1))
 
 
 def _deterministic_result(name, params, scenario, seed):
@@ -124,6 +168,7 @@ def _deterministic_result(name, params, scenario, seed):
         "calendar_weeks": float(params["calendar_weeks"]),
         "n_stories": direct["n_stories"],
         "variance": {},
+        "variance_error": {},
         "variance_is_partition": False,
         "deterministic": direct,
     }
@@ -154,15 +199,15 @@ def run_scenario(name, params, policy=None, iterations=10_000, seed=7,
         return _deterministic_result(name, params, scenario, seed)
 
     columns = _collect(params, scenario, iterations, seed, uncertainty, ())
-    variance = {}
+    variance, variance_error = {}, {}
     if decompose:
-        variance = _decompose(params, scenario, iterations, seed, uncertainty,
-                              _spread(_percentiles(columns)))
-    return _assemble(name, params, scenario, direct, columns, variance,
+        variance, variance_error = _decompose(params, scenario, iterations, seed,
+                                              uncertainty, columns)
+    return _assemble(name, params, scenario, direct, columns, variance, variance_error,
                      iterations, seed, uncertainty)
 
 
-def _assemble(name, params, scenario, direct, columns, variance,
+def _assemble(name, params, scenario, direct, columns, variance, variance_error,
               iterations, seed, uncertainty) -> dict:
     """Build the result dict. Plain floats only, so report.py never sees an array (§10)."""
     percentiles = _percentiles(columns)
@@ -194,6 +239,8 @@ def _assemble(name, params, scenario, direct, columns, variance,
         "calendar_weeks": float(params["calendar_weeks"]),
         "n_stories": direct["n_stories"],
         "variance": variance,
+        # Standard error of each share, so a reader can tell signal from estimator noise.
+        "variance_error": variance_error,
         "variance_is_partition": False,
         "deterministic": direct,
     }

@@ -74,12 +74,30 @@ def format_scenario(result: dict) -> str:
 
 
 def format_variance(result: dict) -> str:
-    """The variance decomposition, labelled as what it is and is not (SPEC.md §5)."""
+    """The variance decomposition, labelled as what it is and is not (SPEC.md §5).
+
+    Each share is printed with the standard error of its own estimator, and shares within
+    two of those of zero are named as unresolved rather than quoted as small numbers. At the
+    shipped parameters every source except escape sits there, which is the finding — not a
+    defect in the report.
+    """
+    errors = result.get("variance_error", {})
     ranked = sorted(result["variance"].items(), key=lambda item: -item[1])
-    body = "  ".join(f"{source} {share * 100:.0f}%" for source, share in ranked)
-    note = ("not a partition; shares do not sum to 100%"
-            if not result["variance_is_partition"] else "")
-    return f"  Variance  {body}\n            ({note})"
+    resolved, unresolved = [], []
+    for source, share in ranked:
+        error = errors.get(source, 0.0)
+        if abs(share) > 2.0 * error:
+            resolved.append(f"{source} {share * 100:.0f}% ±{error * 100:.1f}")
+        else:
+            unresolved.append(source)
+
+    lines = [f"  Variance  {'  '.join(resolved) if resolved else 'nothing resolved'}"]
+    if unresolved:
+        lines.append(f"            below the estimator's own noise, so indistinguishable "
+                     f"from zero: {', '.join(unresolved)}")
+    if not result["variance_is_partition"]:
+        lines.append("            (not a partition; shares do not sum to 100%)")
+    return "\n".join(lines)
 
 
 def format_comparison(results: dict, savings: dict | None, superadd: dict | None) -> str:

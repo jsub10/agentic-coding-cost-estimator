@@ -36,12 +36,12 @@
     }
   },
   "aleatory_all_three": {
-    "p50": 68727,
-    "p95": 121259,
+    "p50": 68638,
+    "p95": 120950,
     "tolerance": 0.02,
-    "_note": "Repinned 2026-08-17 when the SPEC.md \u00a75 covariance correction was applied. SPEC.md \u00a76 published 68,300 / 118,300 from the uncorrected model, whose escape rate ran 1.95% below its own derived e in this scenario. The P95 moved +2.5% and so fell outside the 2% tolerance; the P50 moved +0.6% and would have stayed inside it. The claim these figures support -- that parameter uncertainty adds under 2% to D's P95 -- survives, and strengthens: it is now 0.15%. Recorded in SPEC.md \u00a711."
+    "_note": "Repinned 2026-08-17 when the SPEC.md \u00a75 covariance correction was applied. SPEC.md \u00a76 published 68,300 / 118,300 from the uncorrected model, whose escape rate ran 1.95% below its own derived e in this scenario. The P95 moved +2.5% and so fell outside the 2% tolerance; the P50 moved +0.6% and would have stayed inside it. The claim these figures support -- that parameter uncertainty adds under 2% to D's P95 -- survives, and strengthens: it is now 0.15%. Recorded in SPEC.md \u00a711. Repinned again when the common-random-numbers fix changed the stream; the shift is sampling error."
   },
   "variance_escape_share": 0.71,
   "variance_escape_tolerance": 0.08,
-  "_note_variance": "Was 0.72 against the uncorrected freeze, which held e_scale at its median (0.860) rather than its mean and so overstated the share by about 0.7 points. Measured 70.9% at 150,000 iterations."
+  "_note_variance": "Was 0.72 before two fixes. The freeze held e_scale at its median (0.860) rather than its mean, and the chunked run used one continuous stream, so coupling between the baseline and frozen runs decayed as 1/n_chunks and most of the run was uncorrelated noise. Measured 70.9% at 150,000 iterations and 71.0% at 40,000, with a bootstrap standard error of 0.4 points."
 }

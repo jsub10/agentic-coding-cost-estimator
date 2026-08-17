@@ -137,6 +137,86 @@ def test_cluster_pair_has_mean_one(params):
     assert p_cluster * mult + (1.0 - p_cluster) * 1.0 == pytest.approx(1.30)
 
 
+def test_freezing_one_source_changes_only_that_source(params):
+    """§5: the decomposition is meaningless unless the comparison is properly coupled.
+
+    Freezing d cannot affect criteria hours (which depend on S) or generation tokens (which
+    depend on k_scale, A and L). If it does, the random streams have desynchronised and the
+    frozen run differs from the baseline in every source rather than one — which is exactly
+    what happened when the run used a single stream across chunks: coupling decayed as
+    1/n_chunks, so at three chunks two thirds of the run was uncorrelated noise.
+
+    Checked at an iteration count that spans several chunks, because one chunk always
+    coupled correctly and so hid the defect entirely.
+    """
+    scenario = resolved("all_three", params)
+    iterations = 40_000
+    assert iterations > 2 * montecarlo._chunk_size(scenario, iterations), \
+        "this test is only meaningful across a chunk boundary"
+
+    baseline = montecarlo._collect(params, scenario, iterations, 7, "full", ())
+    for source in ("d", "m", "q_rev"):
+        frozen = montecarlo._collect(params, scenario, iterations, 7, "full", (source,))
+        for untouched in ("cost.criteria", "cost.tokens"):
+            if source == "S":
+                continue
+            assert np.array_equal(baseline[untouched], frozen[untouched]), (
+                f"freezing {source} moved {untouched}, so the streams desynchronised")
+
+
+def test_freezing_criteria_hours_does_move_criteria(params):
+    """The converse, so the coupling test above cannot pass by comparing nothing."""
+    scenario = resolved("all_three", params)
+    baseline = montecarlo._collect(params, scenario, 8000, 7, "full", ())
+    frozen = montecarlo._collect(params, scenario, 8000, 7, "full", ("S",))
+    assert not np.array_equal(baseline["cost.criteria"], frozen["cost.criteria"])
+    assert np.array_equal(baseline["cost.tokens"], frozen["cost.tokens"])
+
+
+def test_every_draw_site_consumes_a_fixed_number_of_stream_positions(params):
+    """§5: inverse-CDF draws, so a changed parameter cannot shift a later draw.
+
+    numpy's ``geometric`` consumes a variable number of positions as p varies and its
+    ``binomial`` switches algorithm around n*p = 30. Both are replaced by explicit
+    inverse-CDF draws. Verified here on the geometric substitute, which is the one whose
+    parameter genuinely moves between a baseline and a frozen run.
+    """
+    shape = (2000,)
+    def next_draw_after(p_values):
+        rng = np.random.default_rng(3)
+        u = 1.0 - rng.random(shape)
+        np.ceil(np.log(u) / np.log1p(-p_values))
+        return rng.standard_normal(4)
+
+    flat = np.full(shape, 0.45)
+    varied = np.random.default_rng(11).uniform(0.05, 0.95, shape)
+    assert np.array_equal(next_draw_after(flat), next_draw_after(varied))
+
+
+def test_inverse_cdf_geometric_has_the_right_distribution():
+    """The substitute must be the same variate, not merely a fixed-width one."""
+    rng = np.random.default_rng(5)
+    for p in (0.28, 0.45, 0.90):
+        u = 1.0 - rng.random(200_000)
+        draws = np.ceil(np.log(u) / np.log1p(-p))
+        assert draws.min() >= 1
+        assert draws.mean() == pytest.approx(1.0 / p, rel=0.02)
+        for k in (1, 2, 3):
+            assert np.mean(draws == k) == pytest.approx((1 - p) ** (k - 1) * p, abs=0.003)
+
+
+def test_variance_shares_carry_their_own_standard_error(params):
+    """§5: a share is only quotable against the noise of the estimator that produced it."""
+    result = montecarlo.run_scenario("all_three", params, iterations=8000, seed=7,
+                                     decompose=True)
+    assert set(result["variance_error"]) == set(result["variance"])
+    for source, error in result["variance_error"].items():
+        assert error > 0.0, source
+        assert isinstance(error, float), source
+    # Escape is the one source that clears its own noise by a wide margin.
+    assert result["variance"]["escape"] > 10.0 * result["variance_error"]["escape"]
+
+
 def test_freezing_escape_holds_it_at_its_mean_not_its_median(params):
     """§5: a freeze must remove spread without moving the level.
 

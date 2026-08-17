@@ -485,8 +485,36 @@ this program without any test failing on shape.
 Attempts are drawn with `rng.geometric(p)` and clipped at `A_max`; the clip is what creates the fallback
 branch, so count clipped draws rather than discarding them.
 
-**Variance decomposition** is computed by re-running with one random source at a time frozen at its median
-and measuring the reduction in the P50→P95 spread.
+**Variance decomposition** is computed by re-running with one random source at a time frozen at its mean and
+measuring the reduction in the P50→P95 spread.
+
+**The comparison is only meaningful under common random numbers, and that is harder than it looks.** Freezing
+one source must change that source and nothing else. Two things break it, both silently:
+
+*Variable stream consumption.* NumPy's discrete variates do not consume a fixed number of stream positions —
+`Generator.geometric` consumes a variable number as `p` varies, and `Generator.binomial` switches algorithm at
+`n·p ≈ 30` and does likewise. So a perturbed draw desynchronises **every draw after it**, and the frozen run
+differs from the baseline in every source rather than one. Every draw whose parameter can change between runs
+must therefore be inverse-CDF from an explicit uniform, which consumes exactly one position regardless:
+
+```
+A        = clip(ceil(log(U) / log(1 − p_impl)), 1, A_max)      U ~ Uniform(0,1]
+reviewed = count of stories with U < (1 − f_run), among those not fallen back
+escaped  = count of stories with U < e_run
+```
+
+The last two are what `Binomial(n, p)` means anyway — one Bernoulli per story — and drawing them that way also
+couples them monotonically in `p`, so a small change in `e_run` flips only the stories whose uniform lies
+between the old and new thresholds.
+
+*Chunk boundaries.* The iteration axis is chunked for memory. A single continuous stream across chunks means
+any residual desynchronisation in chunk *k* corrupts every chunk after it, so coupling decays as `1/n_chunks`
+— at three chunks, two thirds of the run is uncorrelated noise. **Each chunk must be seeded independently**,
+from `(seed, chunk_index)`, and **each draw site must have its own generator**, spawned from the injected one.
+Then no draw site can desynchronise another and no chunk can corrupt its successor.
+
+Without both, the decomposition has a noise floor of roughly ±2 percentage points at 40,000 iterations, which
+is larger than every share it is trying to measure except escape.
 
 **Only genuinely random sources may appear.** A constant contributes zero variance, so batch size and any
 other policy parameter must never be listed as a variance share — that was a defect in earlier versions,
@@ -497,20 +525,30 @@ name in a separate table.
 **The shares do not sum to 100%,** and the report must not imply they do. The model is non-linear, so
 freeze-one-at-a-time reductions are not a partition of the variance.
 
-At the shipped parameters the result is stark and worth stating plainly:
+**Every share is reported with the standard error of its own estimator**, obtained by paired bootstrap over
+the iteration axis — resampling the same iteration indices from the baseline and frozen runs, so the coupling
+between them is preserved and what is measured is the uncertainty in the *reduction* rather than the much
+larger uncertainty in either spread alone. It costs no extra simulation. A share is quoted only when it
+exceeds two of its own standard errors; otherwise it is named as unresolved. Reporting "`q_rev` 1%" when the
+estimator's own spread is ±0.7 points would be the same failure REVIEW.md S3-1 found in the original:
+publishing a number the model does not support.
 
-| Source frozen | Reduction in P50→P95 spread |
-|---|---|
-| **Escape (theta, clustering, Bernoulli draw)** | **~72%** |
-| `q_rev` | ~1% |
-| `d` | ~1% |
-| `m` | within Monte Carlo noise |
-| Criteria hours `S` | within Monte Carlo noise |
-| Token trajectory (`A`, `L`) | within Monte Carlo noise |
-| Token `k_scale` | within Monte Carlo noise |
+At the shipped parameters, scenario D at 40,000 iterations:
 
-Escaped defects are essentially the entire uncertainty of this model. Everything else, including all
-parameter uncertainty and all trajectory noise, is individually under two percent.
+| Source frozen | Reduction in P50→P95 spread | Standard error |
+|---|---|---|
+| **Escape (theta, clustering, Bernoulli draw)** | **~71%** | ±0.4 |
+| `m` | ~1% | ±0.5 |
+| `d` | ~1% | ±0.7 |
+| Criteria hours `S` | not resolved | ±0.7 |
+| `q_rev` | not resolved | ±0.2 |
+| Token `k_scale` | not resolved | ±0.3 |
+| Token trajectory (`A`, `L`) | not resolved | ±0.2 |
+
+Escaped defects are essentially the entire uncertainty of this model. **Every other source is smaller than
+this estimator can resolve at 40,000 iterations** — which is a stronger and more honest statement than
+assigning each of them a spurious one percent. Raising the iteration count shrinks the standard errors as
+`1/sqrt(n)`; at 150,000 the second tier begins to separate. Nothing else comes close to escape at any count.
 
 ---
 
@@ -607,9 +645,16 @@ $120,000 at the 95th percentile. **Deliberate quality investment buys tail reduc
 reduction** — you pay about $12,000 at the median to remove about $15,000 of tail. That is the correct way to
 present D+ to a risk-averse decision-maker, and it was invisible while the escape scaling was uncentred.
 
-With `--uncertainty aleatory`, D gives P50 $68,700 / P95 $121,300 — so **parameter uncertainty adds under 2%
-to the P95**, and in fact 0.15%. (These two figures were $68,300 and $118,300 before the §5 covariance
-correction; the conclusion they support is unchanged and slightly stronger. See §11.) Correlated escape dominates so completely that our ignorance of the parameters barely registers,
+With `--uncertainty aleatory`, D gives P50 $68,600 / P95 $121,000 — so **parameter uncertainty adds about 1% to
+the P95**, comfortably under the 2% claimed. (These were $68,300 and $118,300 before the §5 covariance
+correction; the conclusion is unchanged. See §11.)
+
+**That 1% is not resolvable at small iteration counts, and the sign flips if you try.** At 20,000 iterations
+the sampling error on a P95 exceeds the effect, and the aleatory run comes out *above* the full run on two
+seeds in three; at 200,000 the ratio is a stable 1.009–1.011 on every seed. Any check on the direction of this
+comparison must therefore be made at 200,000 iterations or state a magnitude bound instead. The same caution
+applies to every second-tier quantity in §5's variance table: they are real, and they are below what this
+estimator resolves at the default iteration count. Correlated escape dominates so completely that our ignorance of the parameters barely registers,
 which is worth reporting rather than assuming.
 
 **Marginal contributions, which only appear once B and C are both present.** Automating Deliver alone saves
@@ -738,4 +783,6 @@ Record any change that moves a pinned figure, with the reason.
 | 2026-08-17 | **Checked against the supplied `reference_model.py` after the build.** It independently confirms `b` = 6 and the per-scenario `p` tables that §3.3 lacked — A 0.85/0.50/0.28, C 0.90/0.65/0.40, D and D+ 0.92/0.70/0.45, all recovered here before that file was opened. It also confirms the touch counting, the restructure base, and the `min(2, N_impl)` fallback rule. `p_unfrozen_specced` was adopted from it at 0.87/0.54/0.32, replacing an independent fit of 0.88/0.545/0.318 that met every pin equally well; the reference's values are the ones that generated the published figures. | **None.** The deterministic pass now agrees with `reference_model.py` on all 70 figures across all five scenarios to 1.8e-16, and the Monte Carlo P50/P95 agree to within 1.2% — sampling error, since the two consume their streams in different orders. Pinned by `tests/test_reference_model.py`. |
 | 2026-08-17 | **§3.5 — the epistemic lognormals restated as mean-preserving.** The table said "median = nominal" and the note beneath it said `mu = ln(nominal) − σ²/2`; those are different distributions and a builder had to pick one. The note governs, per CLAUDE.md §6. | None. The note was already what the pinned figures used. |
 | 2026-08-17 | **§5 — a third mean error found, of the S1-1 family, and CORRECTED.** `e_base` and `e_scale` are both functions of the same `theta` and negatively correlated through it, so centring each one individually does not make their product mean-preserving. `E[e_run]` sat 1.95% below derived `e` in D and D+ and 2.71% below in C; A and B were exact because `f` = 0 there. The covariance term is 3-4x the `f` Jensen term it was previously lumped in with. REVIEW.md S1-1 caught the two marginal mean errors and missed this one. Corrected by a scalar `gamma = target / shifted`, evaluated once per scenario: Cameron-Martin turns `E[g(Z)exp(lambda_e Z - lambda_e^2/2)]` into `E[g(Z + lambda_e)]`, so the exponential leaves the integrand and no quadrature is needed in the hot loop. `gamma` is 1.0000 in A and B, 1.0279 in C, 1.0199 in D and D+. It removes the `f` Jensen term at the same time. | **None to the deterministic pins**, which do not use `theta`, and none to A or B, where `gamma` is exactly 1. The Monte Carlo P50s for C, D and D+ move by under 0.6% and their P95s by under 1.4%, all still inside the 2% fixture tolerance. The mean-preservation test is tightened from 4% to **0.5% for all five scenarios**. |
+| 2026-08-17 | **§5 — the variance decomposition had a noise floor larger than every share it was measuring, from broken common random numbers.** Two causes, both silent. NumPy's `Generator.geometric` consumes a *variable* number of stream positions as `p` varies, and `Generator.binomial` switches algorithm around `n·p = 30` and does likewise, so a perturbed draw desynchronised every draw after it. And the chunked run used one continuous stream, so any residual desynchronisation in chunk *k* corrupted every later chunk: measured coupling was exactly `1/n_chunks`, meaning at three chunks two thirds of the run was uncorrelated noise. Freezing `d` visibly moved criteria hours and generation tokens, which `d` cannot affect. Fixed by inverse-CDF draws for the geometric and for the reviewed and escaped counts, one generator per draw site, and independent seeding per chunk. | Noise floor **±2.0 -> ±0.8** percentage points at 40,000 iterations. Escape share 71.6% -> **71.0%**, the difference being noise that had been read as signal. Monte Carlo figures shift by sampling error only, since the draws are the same distributions from a different stream; all fixture pins still hold. Deterministic pins untouched. |
+| 2026-08-17 | **§5 — every variance share now carries the standard error of its own estimator**, by paired bootstrap over the iteration axis at no extra simulation cost. At 40,000 iterations only escape clears two standard errors; every other source is below what the estimator can resolve. The report names them as unresolved instead of quoting them. | None to any figure. It stops the report publishing numbers the model does not support — the failure REVIEW.md S3-1 found in the original, in a subtler form. |
 | 2026-08-17 | **§5 — the variance decomposition froze the escape source at its median rather than its mean.** Setting `theta = 0` leaves `e_scale = exp(-lambda_e^2/2)` = 0.860, so the frozen run sat 14% below the derived escape rate and the freeze changed the level as well as the spread. Found while correcting the covariance term; same mean-versus-median family. A frozen escape source now sets `e_scale = 1` and `gamma = 1` explicitly. | Moves the reported escape variance share, which was measured against a contaminated counterfactual. Everything else is unaffected: no other freeze target had this problem, and no reported cost changes. |

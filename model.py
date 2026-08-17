@@ -4,19 +4,16 @@ Two paths sharing all their arithmetic downstream of the counts. ``deterministic
 every random source at its expected value analytically — a *mean-like* quantity, above the
 P50 on a right-skewed distribution (SPEC.md §6). ``simulate`` is the Monte Carlo pass.
 
-The two rules this module exists to get right, both of which fail silently.
+Two rules this module exists to get right, both of which fail silently.
 
 **``theta`` is drawn once per run, never per story.** Run-level arrays are ``(iterations,)``
 and story-level arrays ``(iterations, n_stories, N_impl)``. A ``theta`` shaped like the
 latter removes the correlation the model exists to capture, and no shape assertion catches
 it — only the over-dispersion measurement in tests/test_properties.py does.
 
-**Every random scaling is mean-preserving.** A lognormal carries its ``-sigma^2/2``; the
-cluster multiplier's off-branch value is derived so the pair has expectation 1. Missing
-either inflated the escape rate by 51% (REVIEW.md S1-1). The residual covariance between
-``e_base`` and ``e_scale`` is documented in SPEC.md §5.
+**Every random scaling is mean-preserving**: see :mod:`escape` and SPEC.md §5.
 
-No I/O (CLAUDE.md §8). Draws come from an injected Generator.
+No I/O (CLAUDE.md §8). Draws come from an injected Generator, one stream per draw site.
 """
 
 from __future__ import annotations
@@ -38,6 +35,13 @@ __all__ = ["beta_shape", "cluster_off_multiplier", "covariance_correction", "esc
 
 UNCERTAINTY_MODES = ("full", "aleatory", "none")
 
+# One independent stream per draw site. NumPy's discrete variates consume a variable number
+# of stream positions as their parameters change, so a single shared stream would let a
+# perturbed draw desynchronise every draw after it — and the variance decomposition would be
+# comparing runs that differ in every source rather than one (SPEC.md §5).
+DRAW_SITES = ("epistemic", "theta", "cluster", "eps", "attempts", "multiplier",
+              "exhausted", "reviewed", "escaped")
+
 # The genuinely random sources the variance decomposition may freeze (SPEC.md §5). A
 # constant contributes zero variance, so no policy parameter appears here — that was the
 # defect behind the old "batching 20%" line (REVIEW.md S3-1).
@@ -50,13 +54,22 @@ COST_TERMS = ("tokens",) + HOUR_TERMS
 
 # --- Small closed forms ---------------------------------------------------------------
 
+def draw_sites(rng):
+    """One independent Generator per draw site, spawned from the injected one.
+
+    For the decomposition, not the model: a shared stream lets a perturbed discrete draw
+    desynchronise everything after it, so freezing one source silently changes all of them.
+    """
+    children = rng.bit_generator.seed_seq.spawn(len(DRAW_SITES))
+    return {name: np.random.default_rng(child)
+            for name, child in zip(DRAW_SITES, children)}
+
+
 # --- Attempts and the fallback branch truncation creates ---------------------------
 
 def expected_attempts(p, A_max):
-    """Truncated attempt expectation: ``sum (1-p)^k, k < A_max``. Never ``1/p``.
-
-    Required everywhere including the deterministic pass: ``1/p`` overstates Hard attempts
-    by 5.3% in D and 8.4% in C, and Hard carries most of the token mass. Closed form below.
+    """Truncated attempt expectation: ``sum (1-p)^k, k < A_max``. Never ``1/p``, which
+    overstates Hard attempts by 5.3% in D and 8.4% in C (SPEC.md §4.2).
     """
     q = 1.0 - np.asarray(p, dtype=np.float64)
     return (1.0 - q ** A_max) / np.asarray(p, dtype=np.float64)
@@ -65,8 +78,7 @@ def expected_attempts(p, A_max):
 def implementation_fallback_probability(p, A_max):
     """``(1 - p)^A_max``: one implementation never converges (SPEC.md §4.2).
 
-    Hitting the cap is not failing: one at the cap fails outright only with probability
-    ``1 - p``, giving ``q^(A_max-1) * q``.
+    Hitting the cap is not failing: it fails outright only with probability ``1 - p``.
     """
     return (1.0 - p) ** A_max
 
@@ -211,15 +223,16 @@ def deterministic_run(params, scenario) -> dict:
 # --- The Monte Carlo pass -------------------------------------------------------------
 
 
-def _draw_epistemic(params, scenario, rng, n, uncertainty, frozen):
+def _draw_epistemic(params, scenario, sites, n, uncertainty, frozen):
     """Parameter uncertainty, drawn once per iteration (SPEC.md §3.5).
 
     Beliefs about one organisation, not story-level noise. Every source is drawn whether or
-    not it is switched off, then overwritten, so freezing one source changes it alone.
+    not it is on, then overwritten, so freezing one changes it alone.
     """
-    z = rng.standard_normal((4, n))
+    source = sites["epistemic"]
+    z = source.standard_normal((4, n))
     alpha, beta = beta_shape(params["q_rev"], params["sd_q_rev"])
-    q_rev_draw = rng.beta(alpha, beta, n)
+    q_rev_draw = source.beta(alpha, beta, n)
 
     on = uncertainty == "full"
     ones = np.ones(n, dtype=np.float64)
@@ -240,10 +253,10 @@ def _draw_epistemic(params, scenario, rng, n, uncertainty, frozen):
     }
 
 
-def _draw_escape(params, scenario, rng, n, uncertainty, frozen, epistemic):
+def _draw_escape(params, scenario, sites, n, uncertainty, frozen, epistemic):
     """The repo-level common factor and the escape rate it drives (SPEC.md §5)."""
-    theta = rng.standard_normal(n)
-    clustered = rng.random(n) < params["p_cluster"]
+    theta = sites["theta"].standard_normal(n)
+    clustered = sites["cluster"].random(n) < params["p_cluster"]
     ones = np.ones(n, dtype=np.float64)
 
     if uncertainty == "none" or "escape" in frozen:
@@ -277,7 +290,7 @@ def _draw_escape(params, scenario, rng, n, uncertainty, frozen, epistemic):
     return theta, f_run, np.clip(e_base * escape_scale * cluster_scale, 0.0, 1.0)
 
 
-def _draw_generation(params, scenario, rng, n, theta, frozen):
+def _draw_generation(params, scenario, sites, n, theta, frozen):
     """Generation tokens and the fallback count, drawn per implementation (SPEC.md §4.3).
 
     One ``A`` and one ``L`` per implementation, not one per story multiplied by ``N_impl``.
@@ -297,13 +310,19 @@ def _draw_generation(params, scenario, rng, n, theta, frozen):
 
         # theta loads only weakly on p, deliberately: an unfavourable move in p costs extra
         # tokens, while a doubling of e costs incident hours at premium rates.
-        eps = rng.standard_normal(shape) * params["sigma_p"]
+        eps = sites["eps"].standard_normal(shape) * params["sigma_p"]
         p_impl = logistic(logit(scenario["p"][cls])
                           + params["lambda_p"] * theta[:, None, None] + eps)
 
-        attempts = np.minimum(rng.geometric(p_impl), A_max).astype(np.float64)
-        multiplier = lognormal_scale(rng.standard_normal(shape), params["sigma_k"])
-        exhausted = rng.random(shape) < (1.0 - p_impl)
+        # Inverse-CDF geometric rather than rng.geometric, which consumes a variable
+        # number of stream positions as p_impl varies and so desynchronises every draw
+        # after it (SPEC.md §5). U is drawn on (0, 1] so the logarithm is finite.
+        u = 1.0 - sites["attempts"].random(shape)
+        raw = np.ceil(np.log(u) / np.log1p(-p_impl))
+        attempts = np.clip(raw, 1.0, A_max)
+        multiplier = lognormal_scale(sites["multiplier"].standard_normal(shape),
+                                     params["sigma_k"])
+        exhausted = sites["exhausted"].random(shape) < (1.0 - p_impl)
 
         if "tokens" in frozen:
             attempts_for_tokens = expected_attempts(p_impl, A_max)
@@ -318,6 +337,29 @@ def _draw_generation(params, scenario, rng, n, theta, frozen):
         n_fallback += (converged < min(n_compare_min, n_impl)).sum(axis=1)
 
     return tokens, n_fallback
+
+
+def _draw_reviewed(sites, n, n_stories, n_fallback, f_run):
+    """Stories a human reviews: not auto-merged, not fallen back (SPEC.md §4.4).
+
+    One Bernoulli per story — what Binomial(n, p) means — for fixed stream consumption (§5).
+    """
+    reviewable = np.maximum(n_stories - n_fallback, 0.0).astype(np.int64)
+    eligible = np.arange(n_stories)[None, :] < reviewable[:, None]
+    drawn = sites["reviewed"].random((n, n_stories)) < (1.0 - f_run)[:, None]
+    return (eligible & drawn).sum(axis=1).astype(np.float64)
+
+
+def _draw_escaped(sites, n, n_stories, e_run, frozen):
+    """Merged stories carrying a functional defect, one Bernoulli per story (SPEC.md §5).
+
+    Frozen, the count is its expectation and no draw happens — safe only because this site
+    has its own stream and so cannot shift another's.
+    """
+    if "escape" in frozen:
+        return n_stories * e_run
+    drawn = sites["escaped"].random((n, n_stories)) < e_run[:, None]
+    return drawn.sum(axis=1).astype(np.float64)
 
 
 def simulate(params, scenario, rng, iterations, uncertainty="full", frozen=()) -> dict:
@@ -335,21 +377,18 @@ def simulate(params, scenario, rng, iterations, uncertainty="full", frozen=()) -
                          f"random sources are {VARIANCE_SOURCES}")
 
     n_stories = sum(scenario["n_stories"].values())
-    epistemic = _draw_epistemic(params, scenario, rng, iterations, uncertainty, frozen)
-    theta, f_run, e_run = _draw_escape(params, scenario, rng, iterations, uncertainty,
+    sites = draw_sites(rng)
+    epistemic = _draw_epistemic(params, scenario, sites, iterations, uncertainty, frozen)
+    theta, f_run, e_run = _draw_escape(params, scenario, sites, iterations, uncertainty,
                                        frozen, epistemic)
-    generation, n_fallback = _draw_generation(params, scenario, rng, iterations, theta,
+    generation, n_fallback = _draw_generation(params, scenario, sites, iterations, theta,
                                               frozen)
 
     total_tokens = (generation * epistemic["k_scale"]
                     + sum(scenario["apparatus_tokens"].values()))
 
-    reviewable = np.maximum(n_stories - n_fallback, 0.0).astype(np.int64)
-    n_reviewed = rng.binomial(reviewable, 1.0 - f_run).astype(np.float64)
-    if "escape" in frozen:
-        n_escaped = n_stories * e_run
-    else:
-        n_escaped = rng.binomial(n_stories, e_run).astype(np.float64)
+    n_reviewed = _draw_reviewed(sites, iterations, n_stories, n_fallback, f_run)
+    n_escaped = _draw_escaped(sites, iterations, n_stories, e_run, frozen)
 
     hours = compose_hours(params, scenario, n_stories, n_fallback, n_reviewed,
                           n_escaped, epistemic["S"])
