@@ -137,6 +137,69 @@ def test_cluster_pair_has_mean_one(params):
     assert p_cluster * mult + (1.0 - p_cluster) * 1.0 == pytest.approx(1.30)
 
 
+def test_freezing_escape_holds_it_at_its_mean_not_its_median(params):
+    """§5: a freeze must remove spread without moving the level.
+
+    Setting theta = 0 leaves lognormal_scale(0, lambda_e) = exp(-lambda_e^2/2) = 0.860,
+    which is e_scale's median. Freezing there drops the escape level 14% as well as removing
+    its spread, so the decomposition would be measuring against a counterfactual that
+    differs from the baseline in two ways at once, and would overstate the escape share.
+    """
+    # The trap itself, stated so it is obvious what the assertion below is guarding.
+    assert model.lognormal_scale(0.0, params["lambda_e"]) == pytest.approx(0.8596, abs=1e-4)
+
+    for name in SCENARIOS:
+        scenario = resolved(name, params)
+        rng = np.random.default_rng(7)
+        draw = model.simulate(params, scenario, rng, 40_000, frozen=("escape",))
+        derived = model.escape_rate(
+            model.escape_gate(scenario["d"], scenario["rho"], scenario["m"]),
+            scenario["f_base"], params["q_rev"])
+        realised = np.asarray(draw["n_escaped"]).mean()
+        assert realised == pytest.approx(
+            derived * sum(scenario["n_stories"].values()), rel=0.01), name
+
+
+def test_correction_only_moves_the_gated_scenarios(params):
+    """§5: gamma is 1 where f = 0, so A and B cannot be disturbed by the correction."""
+    for name in ("execute_only", "execute_decide"):
+        assert model.covariance_correction(params, resolved(name, params)) == 1.0
+    for name in ("execute_deliver", "all_three", "all_three_quality"):
+        assert model.covariance_correction(params, resolved(name, params)) > 1.0
+
+
+def test_the_two_loadings_switch_off_different_halves_of_the_correction(params):
+    """gamma removes two distinct errors, and the loadings separate them.
+
+    lambda_f = 0 pins f_run at f_base, so it is constant in theta: no Jensen term and no
+    covariance, and gamma must be exactly 1. lambda_e = 0 flattens e_scale, so the
+    *covariance* goes but the f Jensen term stays — E[f_run] is still below f_base — and
+    gamma must remain above 1 by exactly that amount. A gamma that went to 1 in both cases
+    would be correcting the covariance only and leaving the Jensen term behind.
+    """
+    no_f = params_module.apply_overrides(params, {"lambda_f": 0.0})
+    for name in SCENARIOS:
+        assert model.covariance_correction(no_f, resolved(name, no_f)) == pytest.approx(
+            1.0, rel=1e-12), name
+
+    no_e = params_module.apply_overrides(params, {"lambda_e": 0.0})
+    nodes, weights = np.polynomial.hermite_e.hermegauss(96)
+    weights = weights / weights.sum()
+    for name in SCENARIOS:
+        scenario = resolved(name, no_e)
+        f_base, q_rev = scenario["f_base"], no_e["q_rev"]
+        gamma = model.covariance_correction(no_e, scenario)
+        if f_base <= 0.0:
+            assert gamma == 1.0, name
+            continue
+        # The f Jensen term alone, with no e_scale in the integrand at all.
+        f_run = model.logistic(model.logit(f_base) - no_e["lambda_f"] * nodes)
+        jensen_only = ((f_base + (1.0 - f_base) * q_rev)
+                       / float((weights * (f_run + (1.0 - f_run) * q_rev)).sum()))
+        assert gamma == pytest.approx(jensen_only, rel=1e-12), name
+        assert gamma > 1.0, name
+
+
 def test_beta_shape_recovers_its_mean_and_sd(params):
     alpha, beta = model.beta_shape(params["q_rev"], params["sd_q_rev"])
     mean = alpha / (alpha + beta)

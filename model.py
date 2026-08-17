@@ -25,7 +25,16 @@ import math
 
 import numpy as np
 
+from escape import (beta_shape, cluster_off_multiplier, covariance_correction,
+                    escape_gate, escape_rate, logistic, logit, lognormal_scale)
 from params import CLASSES
+
+# Re-exported so that the escape equation is reachable as model.escape_gate and friends,
+# which is the API the acceptance suite pins (CLAUDE.md §7 forbids editing it to suit a
+# refactor). escape.py is where they are defined and explained.
+__all__ = ["beta_shape", "cluster_off_multiplier", "covariance_correction", "escape_gate",
+           "escape_rate", "logistic", "logit", "lognormal_scale", "expected_attempts",
+           "story_fallback_probability", "deterministic_run", "simulate"]
 
 UNCERTAINTY_MODES = ("full", "aleatory", "none")
 
@@ -39,38 +48,9 @@ HOUR_TERMS = ("criteria", "review", "spec", "architecture",
 
 COST_TERMS = ("tokens",) + HOUR_TERMS
 
-
 # --- Small closed forms ---------------------------------------------------------------
 
-def logit(p):
-    """Log-odds — the space in which theta loads on a probability additively."""
-    return np.log(p) - np.log1p(-np.asarray(p, dtype=np.float64))
-
-
-def logistic(x):
-    """Inverse of :func:`logit`."""
-    return 1.0 / (1.0 + np.exp(-np.asarray(x, dtype=np.float64)))
-
-
-def escape_gate(d, rho, m):
-    """Stage one: the defect survives the automated oracle set (SPEC.md §4.1).
-
-    ``d * (rho + (1 - rho) * m)`` — missed either because the check is blind to it by
-    construction, or because the oracle set misses it. A named intermediate: a reader
-    checking against SPEC.md §4.1 needs both stages visible.
-    """
-    return d * (rho + (1.0 - rho) * m)
-
-
-def escape_rate(e_gate, f, q_rev):
-    """Stage two: it also survives whatever review follows (SPEC.md §4.1).
-
-    ``e_gate * (f + (1 - f) * q_rev)``. With probability ``f`` nobody sees it; otherwise a
-    human reviews and misses it with probability ``q_rev``. Hence the counter-intuitive
-    term: raising ``f`` *raises* ``e`` for a fixed gate.
-    """
-    return e_gate * (f + (1.0 - f) * q_rev)
-
+# --- Attempts and the fallback branch truncation creates ---------------------------
 
 def expected_attempts(p, A_max):
     """Truncated attempt expectation: ``sum (1-p)^k, k < A_max``. Never ``1/p``.
@@ -101,31 +81,6 @@ def story_fallback_probability(p, A_max, n_impl, n_compare_min):
     survived = 1.0 - u
     return float(sum(math.comb(n_impl, j) * survived ** j * u ** (n_impl - j)
                      for j in range(min(n_compare_min, n_impl))))
-
-
-def cluster_off_multiplier(p_cluster, cluster_mult):
-    """Off-branch escape multiplier, derived so the clustered pair has expectation 1.
-
-    ``(1 - p_cluster*cluster_mult) / (1 - p_cluster)`` = 0.647 at the defaults; applying
-    ``cluster_mult`` on the clustered branch alone gives 1.300, half of REVIEW.md S1-1.
-    """
-    return (1.0 - p_cluster * cluster_mult) / (1.0 - p_cluster)
-
-
-def lognormal_scale(normals, sigma):
-    """Mean-preserving lognormal multiplier ``exp(sigma*Z - sigma^2/2)``, so ``E[.] = 1``.
-
-    Takes standard normals rather than making them, so the caller controls the order the
-    stream is consumed in — which is what gives the decomposition common random numbers.
-    """
-    return np.exp(sigma * normals - 0.5 * sigma * sigma)
-
-
-def beta_shape(mean, sd):
-    """A Beta's (alpha, beta) from its mean and standard deviation (SPEC.md §3.5)."""
-    nu = mean * (1.0 - mean) / (sd * sd) - 1.0
-    return mean * nu, (1.0 - mean) * nu
-
 
 
 # --- Shared assembly. Both paths route through these, so there is one hours equation. ---
@@ -292,11 +247,22 @@ def _draw_escape(params, scenario, rng, n, uncertainty, frozen, epistemic):
     ones = np.ones(n, dtype=np.float64)
 
     if uncertainty == "none" or "escape" in frozen:
+        # Freeze at the mean, not the median. theta = 0 is both for theta itself, but
+        # lognormal_scale(0, lambda_e) is exp(-lambda_e^2/2) = 0.860 — the median of
+        # e_scale, not its mean. Freezing there would move the escape level down 14% as
+        # well as removing its spread, contaminating the reduction the decomposition
+        # measures (SPEC.md §5). So e_scale and gamma are set to 1 explicitly.
         theta = np.zeros(n, dtype=np.float64)
         cluster_scale = ones
+        escape_scale = ones
     else:
         off = cluster_off_multiplier(params["p_cluster"], params["cluster_mult"])
         cluster_scale = np.where(clustered, params["cluster_mult"], off)
+        # exp(lambda_e*theta - lambda_e^2/2) times the covariance correction. The first
+        # centres e_scale on its own; the second centres its product with e_base, which the
+        # first cannot do because the two share theta. At lambda_e = 0 both collapse to 1.
+        escape_scale = (lognormal_scale(theta, params["lambda_e"])
+                        * covariance_correction(params, scenario))
 
     # f_base = 0 has no logit, and no amount of theta should move a gate that is switched
     # off. Handled explicitly rather than by letting an infinity propagate.
@@ -308,13 +274,7 @@ def _draw_escape(params, scenario, rng, n, uncertainty, frozen, epistemic):
     e_base = escape_rate(
         escape_gate(epistemic["d"], scenario["rho"], epistemic["m"]),
         f_run, epistemic["q_rev"])
-
-    # exp(lambda_e*theta - lambda_e^2/2). The correction is not optional: without it this
-    # factor has expectation exp(lambda_e^2/2) = 1.163 rather than 1, and with an uncentred
-    # cluster multiplier it inflated the escape rate 51% (REVIEW.md S1-1). At lambda_e = 0
-    # it collapses to 1, so no special case is needed.
-    e_scale = lognormal_scale(theta, params["lambda_e"])
-    return theta, f_run, np.clip(e_base * e_scale * cluster_scale, 0.0, 1.0)
+    return theta, f_run, np.clip(e_base * escape_scale * cluster_scale, 0.0, 1.0)
 
 
 def _draw_generation(params, scenario, rng, n, theta, frozen):

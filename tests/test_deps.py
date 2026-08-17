@@ -22,7 +22,8 @@ ALLOWED_THIRD_PARTY = {"numpy"}
 ALLOWED_STDLIB = {"__future__", "argparse", "ast", "json", "math", "pathlib",
                   "sys", "time", "itertools", "collections"}
 
-LOCAL = {"params", "scenarios", "model", "montecarlo", "report", "reference"}
+LOCAL = {"params", "scenarios", "escape", "model", "montecarlo", "report",
+         "reference"}
 
 TEST_ONLY = {"pytest"}
 
@@ -52,8 +53,8 @@ def source_files():
 def test_source_files_were_found():
     """Guards the rest of this file against silently checking nothing."""
     found = {path.name for path in source_files()}
-    assert found == {"params.py", "scenarios.py", "model.py", "montecarlo.py",
-                     "report.py", "__main__.py"}, found
+    assert found == {"params.py", "scenarios.py", "escape.py", "model.py",
+                     "montecarlo.py", "report.py", "__main__.py"}, found
 
 
 @pytest.mark.parametrize("path", source_files(), ids=lambda p: p.name)
@@ -76,9 +77,14 @@ def test_params_imports_nothing_from_this_project():
     assert not imported_names(ROOT / "params.py") & LOCAL
 
 
+def test_escape_imports_nothing_from_this_project():
+    """escape.py is pure arithmetic on probabilities: it needs no parameter registry."""
+    assert not imported_names(ROOT / "escape.py") & LOCAL
+
+
 def test_dependency_direction_is_one_way():
     """CLAUDE.md §3: __main__ -> report -> montecarlo -> model -> scenarios -> params."""
-    order = ["params", "scenarios", "model", "montecarlo", "report", "__main__"]
+    order = ["params", "scenarios", "escape", "model", "montecarlo", "report", "__main__"]
     rank = {name: index for index, name in enumerate(order)}
     for path in source_files():
         this = rank[path.stem]
@@ -90,7 +96,7 @@ def test_dependency_direction_is_one_way():
 def test_model_and_montecarlo_do_no_io():
     """CLAUDE.md §8: no I/O in model.py or montecarlo.py, not even logging."""
     forbidden = {"open", "print", "input"}
-    for name in ("model.py", "montecarlo.py"):
+    for name in ("escape.py", "model.py", "montecarlo.py"):
         tree = ast.parse((ROOT / name).read_text(encoding="utf-8"))
         called = {node.func.id for node in ast.walk(tree)
                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}

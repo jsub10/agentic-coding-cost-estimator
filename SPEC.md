@@ -365,6 +365,14 @@ e_scale = exp(lambda_e × theta − lambda_e²/2)          the −lambda_e²/2 i
 clustered ~ Bernoulli(p_cluster)
 e_scale ×= cluster_mult          if clustered
 e_scale ×= (1 − p_cluster × cluster_mult) / (1 − p_cluster)   otherwise   [= 0.647 at defaults]
+
+--- covariance correction: e_base and e_scale share theta, so centring each is not enough ---
+target  = f_base + (1 − f_base) × q_rev                            the nominal review factor
+shifted = E_Z[ g(lambda_e + Z) + (1 − g(lambda_e + Z)) × q_rev ],  Z ~ Normal(0, 1)
+          where g(t) = logistic(logit(f_base) − lambda_f × t)
+gamma   = target / shifted                             [1.0000 in A and B, 1.0279 in C,
+e_scale ×= gamma                                        1.0199 in D and D+]
+
 e_run   = clip(e_base × e_scale, 0, 1)
 
 --- per story, per implementation ---
@@ -413,20 +421,57 @@ direction is conservative — the simulation escapes slightly *less* than the de
 understates cost rather than overstating it — but it is the same defect as S1-1 with a smaller coefficient
 and the opposite sign.
 
-**It is left uncorrected, deliberately.** Correcting it means dividing `e_scale` by
-`E[e_base × e_scale] / E[e_base]`, a quadrature over `theta` inside the hot loop, which makes `e_run` depend
-on the whole joint distribution rather than on the line above it. That is a change to the model rather than a
-bug fix, and it would move every pinned percentile. Recorded in §11 as a decision rather than absorbed
-silently.
+**The correction, `gamma`, is a scalar and costs nothing.** It looks as though removing the covariance needs a
+quadrature over the joint distribution inside the hot loop. It does not, because `d`, `m` and `q_rev` are
+independent of `theta` and enter `e_base` linearly, so all of them factor out:
 
-**Mandatory property test.** At 200,000 iterations, the realised mean escape count must equal `e × n_stories`
-for every scenario **to 4%**, and **to 0.5%** for A and B, where no covariance term exists. The 4% bound is
-C's 2.71% structural gap plus Monte Carlo error at 200,000 iterations, with margin; 3% would sit directly on
-top of C and fail intermittently on the seed. The suite
-additionally asserts the 0.5% bound for every scenario with `lambda_f` set to zero, which removes the
-covariance and isolates the Jensen-bias class exactly. Those three checks together still catch the whole
-class decisively — S1-1 was a **51%** error and its two components were 16% and 30% — while stating the
-residual instead of hiding it inside one loose bound.
+```
+E[e_base × e_scale] = E[d(rho + (1−rho)m)] × E[(f_run + (1−f_run) q_rev) × e_scale]
+                    = E[gate] × ( E[f_run × e_scale] × (1 − q_rev) + q_rev )
+```
+
+and the one remaining expectation has an exact identity. For `Z ~ Normal(0,1)` and any `g`,
+
+```
+E[ g(Z) × exp(lambda_e × Z − lambda_e²/2) ] = E[ g(Z + lambda_e) ]
+```
+
+because `exp(lambda_e·z − lambda_e²/2) φ(z) = φ(z − lambda_e)` — the exponential *is* a change of measure that
+shifts the mean by `lambda_e` (Cameron–Martin). So the exponential disappears entirely, and what is left is
+the expectation of a bounded logistic against a shifted Gaussian: one well-conditioned 1-D quadrature,
+evaluated **once per scenario** rather than once per iteration. `gamma` is then a constant multiplier.
+
+Two properties worth checking in any implementation. **`gamma` is exactly 1 when `f_base = 0`**, because
+`f_run` is then identically zero, `e_base` does not depend on `theta`, and there is no covariance to remove —
+so A and B are untouched and their pinned figures cannot move. And **`gamma` corrects the `f` Jensen term at
+the same time**, because `shifted` is the true expectation of the whole review factor rather than of `f`
+alone. One constant removes both errors.
+
+**Freeze at the mean, not at the median.** A related trap sits in the variance decomposition. Freezing the
+escape source by setting `theta = 0` leaves `e_scale = exp(−lambda_e²/2)` = **0.860**, which is its median and
+not its mean. That is not a neutral freeze: it moves the escape level down 14% as well as removing its spread,
+and so contaminates the very reduction being measured. A frozen escape source must set `e_scale = 1` and
+`gamma = 1` explicitly.
+
+**Mandatory property test, in two parts.** Monte Carlo alone cannot pin this tightly enough to be useful. The
+escape count is over-dispersed relative to binomial by 2.9x to 21.7x, so its standard error at 200,000
+iterations is about 0.3% relative — meaning a realised-mean check has to allow roughly 1%, while the defect it
+must catch is only 2.0–2.7%. A factor of two is not a margin worth relying on. So the property is asserted
+twice, at two different precisions:
+
+1. **`gamma` itself, deterministically, to 1e-10.** The implementation computes it by Cameron–Martin;
+   the test recomputes `E[e_base × e_scale] / E[e_base]` by direct quadrature *including* the exponential,
+   which is a different route to the same number. This pins the correction exactly, with no sampling in it
+   at all, and is where the real precision lives.
+2. **The realised mean, end to end, to 1% at 200,000 iterations.** About 3.5 standard errors, so it is stable
+   across seeds rather than merely stable on one. This catches wiring errors — a `gamma` computed correctly
+   and applied to the wrong factor, or dropped — that a check on `gamma` alone would miss.
+
+The suite additionally asserts the realised-mean bound with `lambda_f` set to zero, which removes the
+covariance by a third route and so distinguishes a correct `gamma` from one compensating for another bug.
+Together these catch the whole Jensen-bias class: S1-1 was a **51%** error, its two components 16% and 30%,
+and the covariance term 2.0–2.7% — the first part of the test would fail on any of them by six or more orders
+of magnitude.
 
 Repeat 10,000 times. Report P50 / P80 / P95 of total cost, and of each component.
 
@@ -562,8 +607,9 @@ $120,000 at the 95th percentile. **Deliberate quality investment buys tail reduc
 reduction** — you pay about $12,000 at the median to remove about $15,000 of tail. That is the correct way to
 present D+ to a risk-averse decision-maker, and it was invisible while the escape scaling was uncentred.
 
-With `--uncertainty aleatory`, D gives P50 $68,300 / P95 $118,300 — so **parameter uncertainty adds under 2%
-to the P95.** Correlated escape dominates so completely that our ignorance of the parameters barely registers,
+With `--uncertainty aleatory`, D gives P50 $68,700 / P95 $121,300 — so **parameter uncertainty adds under 2%
+to the P95**, and in fact 0.15%. (These two figures were $68,300 and $118,300 before the §5 covariance
+correction; the conclusion they support is unchanged and slightly stronger. See §11.) Correlated escape dominates so completely that our ignorance of the parameters barely registers,
 which is worth reporting rather than assuming.
 
 **Marginal contributions, which only appear once B and C are both present.** Automating Deliver alone saves
@@ -691,4 +737,5 @@ Record any change that moves a pinned figure, with the reason.
 | 2026-08-17 | **`EPISTEMIC` admitted as a fourth provenance kind.** CLAUDE.md §5 says kind is "exactly one of" PRICE / CALIBRATED / POLICY, while §3.5 above declares `kind = EPISTEMIC`. SPEC governs, so the registry accepts four kinds. | None. |
 | 2026-08-17 | **Checked against the supplied `reference_model.py` after the build.** It independently confirms `b` = 6 and the per-scenario `p` tables that §3.3 lacked — A 0.85/0.50/0.28, C 0.90/0.65/0.40, D and D+ 0.92/0.70/0.45, all recovered here before that file was opened. It also confirms the touch counting, the restructure base, and the `min(2, N_impl)` fallback rule. `p_unfrozen_specced` was adopted from it at 0.87/0.54/0.32, replacing an independent fit of 0.88/0.545/0.318 that met every pin equally well; the reference's values are the ones that generated the published figures. | **None.** The deterministic pass now agrees with `reference_model.py` on all 70 figures across all five scenarios to 1.8e-16, and the Monte Carlo P50/P95 agree to within 1.2% — sampling error, since the two consume their streams in different orders. Pinned by `tests/test_reference_model.py`. |
 | 2026-08-17 | **§3.5 — the epistemic lognormals restated as mean-preserving.** The table said "median = nominal" and the note beneath it said `mu = ln(nominal) − σ²/2`; those are different distributions and a builder had to pick one. The note governs, per CLAUDE.md §6. | None. The note was already what the pinned figures used. |
-| 2026-08-17 | **§5 — a third mean error found, of the S1-1 family, and left uncorrected by decision.** `e_base` and `e_scale` are both functions of the same `theta` and negatively correlated through it, so centring each one individually does not make their product mean-preserving. `E[e_run]` sits 1.95% below derived `e` in D and D+ and 2.71% below in C; A and B are exact because `f` = 0 there. The covariance term is 3-4x the `f` Jensen term it was previously lumped in with. REVIEW.md S1-1 caught the two marginal mean errors and missed this one. | **None to the deterministic pins**, which do not use `theta`. The Monte Carlo pins are unaffected because they were generated from this same specification. The mean-preservation test is toleranced to 3%, with a 0.5% bound for A and B and a 0.5% bound for all five at `lambda_f` = 0. |
+| 2026-08-17 | **§5 — a third mean error found, of the S1-1 family, and CORRECTED.** `e_base` and `e_scale` are both functions of the same `theta` and negatively correlated through it, so centring each one individually does not make their product mean-preserving. `E[e_run]` sat 1.95% below derived `e` in D and D+ and 2.71% below in C; A and B were exact because `f` = 0 there. The covariance term is 3-4x the `f` Jensen term it was previously lumped in with. REVIEW.md S1-1 caught the two marginal mean errors and missed this one. Corrected by a scalar `gamma = target / shifted`, evaluated once per scenario: Cameron-Martin turns `E[g(Z)exp(lambda_e Z - lambda_e^2/2)]` into `E[g(Z + lambda_e)]`, so the exponential leaves the integrand and no quadrature is needed in the hot loop. `gamma` is 1.0000 in A and B, 1.0279 in C, 1.0199 in D and D+. It removes the `f` Jensen term at the same time. | **None to the deterministic pins**, which do not use `theta`, and none to A or B, where `gamma` is exactly 1. The Monte Carlo P50s for C, D and D+ move by under 0.6% and their P95s by under 1.4%, all still inside the 2% fixture tolerance. The mean-preservation test is tightened from 4% to **0.5% for all five scenarios**. |
+| 2026-08-17 | **§5 — the variance decomposition froze the escape source at its median rather than its mean.** Setting `theta = 0` leaves `e_scale = exp(-lambda_e^2/2)` = 0.860, so the frozen run sat 14% below the derived escape rate and the freeze changed the level as well as the spread. Found while correcting the covariance term; same mean-versus-median family. A frozen escape source now sets `e_scale = 1` and `gamma = 1` explicitly. | Moves the reported escape variance share, which was measured against a contaminated counterfactual. Everything else is unaffected: no other freeze target had this problem, and no reported cost changes. |

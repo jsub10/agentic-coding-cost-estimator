@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 import model
@@ -424,34 +425,61 @@ def derived_escape_count(name, params):
 
 
 @pytest.mark.parametrize("name", SCENARIOS)
-def test_simulated_mean_escape_count_matches_the_derived_rate(name, params):
-    """§5, the mandatory property test. Realised mean escapes = e x n_stories, to 3%.
+def test_covariance_correction_is_exact(name, params):
+    """§5, part 1 of the mandatory property test. gamma, to 1e-10, with no sampling in it.
 
-    Catches the whole class of Jensen-bias errors — uncentred exp(lambda_e x theta), a
-    cluster multiplier applied only on the clustered branch, a lognormal without its
-    -sigma^2/2. The first two together inflated the escape rate by 51% (REVIEW.md S1-1).
-
-    4% is the bound §5 states, and it is what it is because of the covariance between
-    e_base and e_scale documented there: both are functions of theta, so centring each
-    individually does not centre their product. C's structural gap alone is 2.71%, and the
-    bound has to clear that plus Monte Carlo error. It is nowhere near loose enough to admit
-    the 51% error or either of the 16% and 30% errors composing it, and the two sharper
-    tests below pin the residual from opposite directions.
+    model.covariance_correction computes gamma by Cameron-Martin, which removes the
+    exponential from the integrand analytically. This recomputes it the other way — direct
+    quadrature of E[e_base x e_scale] / E[e_base] with the exponential left in — so the two
+    routes are genuinely independent. This is where the precision lives: Monte Carlo can
+    only bound the same property to about 1%, against a defect of 2.0-2.7%.
     """
-    result = montecarlo.run_scenario(name, params, iterations=200_000, seed=11)
-    assert result["mean_escaped"] == pytest.approx(
-        derived_escape_count(name, params), rel=0.04)
+    scenario = resolved(name, params)
+    nodes, weights = np.polynomial.hermite_e.hermegauss(96)
+    weights = weights / weights.sum()
+
+    f_base, q_rev = scenario["f_base"], params["q_rev"]
+    if f_base <= 0.0:
+        f_run = np.zeros_like(nodes)
+    else:
+        f_run = model.logistic(model.logit(f_base) - params["lambda_f"] * nodes)
+    review_factor = f_run + (1.0 - f_run) * q_rev
+    e_scale = np.exp(params["lambda_e"] * nodes - 0.5 * params["lambda_e"] ** 2)
+
+    expected = (f_base + (1.0 - f_base) * q_rev) / float((weights * review_factor
+                                                          * e_scale).sum())
+    assert model.covariance_correction(params, scenario) == pytest.approx(
+        expected, rel=1e-10)
 
 
 @pytest.mark.parametrize("name", ("execute_only", "execute_decide"))
-def test_mean_escape_is_exact_where_no_gate_creates_a_covariance(name, params):
-    """§5: A and B have f = 0, so e_base does not depend on theta and no covariance exists.
+def test_correction_is_exactly_one_where_there_is_no_covariance(name, params):
+    """§5: with f = 0, e_base does not depend on theta, so there is nothing to correct.
 
-    These two must be exact. Any Jensen bias in the escape scaling shows up here undiluted.
+    Exactly 1.0, not approximately: A and B's pinned figures must not be able to move.
+    """
+    assert model.covariance_correction(params, resolved(name, params)) == 1.0
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_simulated_mean_escape_count_matches_the_derived_rate(name, params):
+    """§5, part 2. Realised mean escapes = e x n_stories, end to end, to 1%.
+
+    Catches the whole class of Jensen-bias errors — uncentred exp(lambda_e x theta), a
+    cluster multiplier applied only on the clustered branch, a lognormal without its
+    -sigma^2/2, and the e_base/e_scale covariance. The first two together inflated the
+    escape rate by 51% (REVIEW.md S1-1).
+
+    1% is about 3.5 standard errors at 200,000 iterations: the escape count is 2.9x to
+    21.7x over-dispersed relative to binomial, so its sampling error is around 0.3%
+    relative. The bound is stable across seeds rather than merely on this one. The exact
+    check on gamma above is what pins the correction; this catches wiring errors that a
+    check on gamma alone would miss — a correct gamma applied to the wrong factor, or
+    dropped on one code path.
     """
     result = montecarlo.run_scenario(name, params, iterations=200_000, seed=11)
     assert result["mean_escaped"] == pytest.approx(
-        derived_escape_count(name, params), rel=0.005)
+        derived_escape_count(name, params), rel=0.01)
 
 
 @pytest.mark.parametrize("name", SCENARIOS)
@@ -462,9 +490,11 @@ def test_mean_escape_is_exact_once_the_gate_coupling_is_removed(name, params):
     ones, and holds the implementation to 0.5% rather than to the 3% the covariance forces.
     """
     uncoupled = params_module.apply_overrides(params, {"lambda_f": 0.0})
+    assert model.covariance_correction(uncoupled, resolved(name, uncoupled)) == \
+        pytest.approx(1.0, rel=1e-12)
     result = montecarlo.run_scenario(name, uncoupled, iterations=200_000, seed=11)
     assert result["mean_escaped"] == pytest.approx(
-        derived_escape_count(name, uncoupled), rel=0.005)
+        derived_escape_count(name, uncoupled), rel=0.01)
 
 
 @pytest.mark.parametrize("name", SCENARIOS)

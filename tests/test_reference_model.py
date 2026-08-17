@@ -12,8 +12,13 @@ the model.
 **The deterministic pass must agree exactly**, to floating-point rounding, on every figure.
 There is no sampling in it, so anything else is a discrepancy in the arithmetic.
 
-**The Monte Carlo pass agrees only to Monte Carlo error.** The two implementations consume
-their random streams in different orders, so identical seeds do not produce identical draws.
+**The Monte Carlo pass agrees only to Monte Carlo error, and only where gamma is 1.** The two
+implementations consume their random streams in different orders, so identical seeds do not
+produce identical draws. Beyond that, the supplied reference predates the SPEC.md §5
+covariance correction and so still carries that defect: its escape rate runs 1.95% to 2.71%
+below its own derived e in the three gated scenarios. This build is expected to read higher
+there, and ``test_the_supplied_reference_carries_the_covariance_defect`` checks that the
+reference really does have the defect rather than assuming it.
 """
 
 from __future__ import annotations
@@ -144,17 +149,55 @@ def test_the_escape_equation_matches():
 @pytest.mark.parametrize("letter,name", list(BY_LETTER.items()))
 @pytest.mark.parametrize("epistemic,uncertainty", [(True, "full"), (False, "aleatory")])
 def test_monte_carlo_agrees_to_sampling_error(letter, name, epistemic, uncertainty, params):
-    """P50 and P95 within 2%.
+    """P50 and P95, with a bound that depends on whether the correction applies.
 
-    Not tighter, and it would be dishonest to make it tighter: the two implementations draw
-    in different orders, so the same seed gives different numbers. Measured divergence at
-    40,000 iterations is under 1.2% everywhere, and worst on A's P95 — the fattest tail in
-    the set, which is exactly where sampling error is largest.
+    **The supplied reference does not carry the SPEC.md §5 covariance correction.** It was
+    written before that defect was found, so its escape rate runs 1.95% to 2.71% below its
+    own derived e in any scenario with a gate. This build is therefore *expected* to read
+    slightly higher there, and the test says so rather than hiding it in a loose bound.
+
+    Where gamma is 1 — A and B, which have f = 0 — the two implementations are the same
+    model and agree to sampling error alone. The two draw in different orders, so identical
+    seeds give different draws; measured divergence is under 1.2%, worst on A's P95, the
+    fattest tail in the set and so exactly where sampling error is largest.
     """
     theirs = reference_model.simulate(letter, iters=40_000, seed=7, epistemic=epistemic)
     reference_p50, reference_p95 = np.percentile(theirs["cost"], [50, 95])
 
     mine = montecarlo.run_scenario(name, params, iterations=40_000, seed=7,
                                    uncertainty=uncertainty)
-    assert mine["percentiles"]["total"]["p50"] == pytest.approx(reference_p50, rel=0.02)
-    assert mine["percentiles"]["total"]["p95"] == pytest.approx(reference_p95, rel=0.02)
+    gamma = model.covariance_correction(params, scenarios.resolve_scenario(name, params))
+
+    if gamma == 1.0:
+        assert mine["percentiles"]["total"]["p50"] == pytest.approx(reference_p50, rel=0.02)
+        assert mine["percentiles"]["total"]["p95"] == pytest.approx(reference_p95, rel=0.02)
+        return
+
+    # Gated scenarios: the correction can only raise the escape rate, so this build must sit
+    # at or above the reference, and close to it. The gap is bounded by what the correction
+    # is worth on the incident line, which is the only line it touches.
+    assert mine["percentiles"]["total"]["p50"] >= reference_p50 * 0.995, (
+        "the correction raises escapes, so the corrected model cannot read lower")
+    assert mine["percentiles"]["total"]["p50"] == pytest.approx(reference_p50, rel=0.035)
+    assert mine["percentiles"]["total"]["p95"] == pytest.approx(reference_p95, rel=0.035)
+
+
+@pytest.mark.parametrize("letter,name", list(BY_LETTER.items()))
+def test_the_supplied_reference_carries_the_covariance_defect(letter, name, params):
+    """Confirms the reference really does have the defect, rather than assuming it.
+
+    Its simulated mean escape rate is compared against the e it derives itself. A and B come
+    out clean because f = 0 leaves no covariance; C, D and D+ come out 2-3% low. If this
+    ever stops being true the reference has been changed, and the looser bound above is no
+    longer justified.
+    """
+    theirs = reference_model.simulate(letter, iters=200_000, seed=11, epistemic=False)
+    derived = reference_model.deterministic(letter)["e"]
+    ratio = float(np.mean(theirs["e_run"])) / derived
+
+    gamma = model.covariance_correction(params, scenarios.resolve_scenario(name, params))
+    if gamma == 1.0:
+        assert ratio == pytest.approx(1.0, rel=0.01), letter
+    else:
+        assert ratio < 0.99, f"{letter} should show the defect, ratio {ratio:.4f}"
+        assert ratio == pytest.approx(1.0 / gamma, rel=0.01), letter
