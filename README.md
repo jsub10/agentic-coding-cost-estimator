@@ -219,6 +219,17 @@ the code; if the spec and the tests disagree, fix the spec first.**
 
 ---
 
+## Licence
+
+**Copyright (c) 2026 Jitendra Subramanyam (jsub10). All rights reserved.**
+
+No permission is granted to use, copy, modify or distribute this code or its documents
+without prior written permission. This repository being publicly readable does not grant a
+licence — see `LICENSE` for the full terms, including what GitHub's own Terms of Service
+separately permit for public repositories.
+
+---
+
 ## Development
 
 ```bash

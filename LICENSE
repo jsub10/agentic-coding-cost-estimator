@@ -1,0 +1,31 @@
+Copyright (c) 2026 Jitendra Subramanyam (jsub10)
+
+All rights reserved.
+
+No permission is granted to any person to use, copy, modify, merge, publish,
+distribute, sublicense, or sell copies of this software or of its accompanying
+documentation, in whole or in part, by any means, without the prior written
+permission of the copyright holder.
+
+This reservation covers the whole of this repository, including the source code,
+the test suite, and the documents SPEC.md, CLAUDE.md, README.md and REVIEW.md.
+The modelling approach set out in those documents is a substantive part of the
+work and is not placed in the public domain by being published here.
+
+PUBLIC VISIBILITY IS NOT A LICENCE. This repository is readable by anyone, and
+that does not grant any of the rights reserved above. Note separately that
+GitHub's Terms of Service permit other GitHub users to view and to fork any
+public repository; that permission flows from those Terms rather than from this
+file, and nothing here should be read as granting any right beyond it.
+
+THE SOFTWARE AND DOCUMENTATION ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE DOCUMENTATION, OR THE USE OR
+OTHER DEALINGS IN THEM.
+
+The calibrated parameter values shipped in params.py are illustrative
+placeholders, not measurements, and the figures they produce are not advice.
+See SPEC.md section 8.
