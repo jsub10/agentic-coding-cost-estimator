@@ -94,7 +94,7 @@ improvements and both raise `p`, so the table is selected by the *pair* `(Step 5
 | Symbol | Step 5 | Steps 2–3 | Routine | Standard | Hard | Scenarios |
 |---|---|---|---|---|---|---|
 | `p_unfrozen` | — | — | 0.85 | 0.50 | 0.28 | A |
-| `p_unfrozen_specced` | — | ✓ | 0.87 | 0.55 | 0.32 | B |
+| `p_unfrozen_specced` | — | ✓ | 0.87 | 0.54 | 0.32 | B |
 | `p_frozen` | ✓ | — | 0.90 | 0.65 | 0.40 | C |
 | `p_frozen_specced` | ✓ | ✓ | 0.92 | 0.70 | 0.45 | D, D+ |
 
@@ -121,17 +121,23 @@ Organisation-wide:
 | `R_gated` | 1.5 | same, when review means adjudicating a flagged question |
 | `I` | 12.0 | hours to resolve one escaped defect |
 | `sigma_k` | 0.35 | lognormal shape for per-attempt token variation |
-| `A_max` | 5 | attempt cap before falling back to human execution |
 | `fallback_hours` | 8.0 | human execution of one story that hit the cap |
 | `adjudication_rate` | 0.40 | share of stories raising a flagged question at Step 7 (scenarios with Step 7 active only) |
-| `restructure_fraction` | 0.05 | capacity reserved for restructuring stories fired by Step 10 |
+| `restructure_fraction` | 0.05 | capacity reserved for restructuring stories — motivated by Step 10, but applied in **every** scenario, including those that do not run it (§4.4) |
 | `s` | 0.25 | context-switch cost per human touch, hours |
 
-Scheduling — `kind = POLICY`, because you choose it rather than measure it (§8):
+Process and scheduling policy — `kind = POLICY`, because you choose these rather than measure them (§8):
 
 | Symbol | Default | Meaning |
 |---|---|---|
+| `A_max` | 5 | attempt cap before falling back to human execution |
 | `b` | 6 | human touches handled per batched session |
+| `n_compare_min` | 2 | converged implementations a story needs before it can be compared instead of handed to a human, applied as `min(n_compare_min, N_impl)` |
+
+`A_max` sits here rather than in the calibrated block because §8 calls it a policy you set, informed by
+logged trajectories: the turn count past which sessions rarely recover. It was previously listed under
+`kind = CALIBRATED`, which contradicted both §8 and the registry. `n_compare_min` is the `min(2, N_impl)`
+of §4.2, named as a parameter rather than left as a literal in `model.py`.
 
 `b` was previously named in the hours equation (§4.4) and in the symbol table without ever being given a
 value, which forced a builder to invent one — the exact failure the provenance rule exists to prevent. The
@@ -156,6 +162,12 @@ Reporting only — `kind = POLICY`. These scale the FTE line required by §10 an
 | `lambda_p` | 0.15 | loading on per-attempt success probability |
 | `p_cluster` | 0.15 | probability a run is a clustered-escape run |
 | `cluster_mult` | 3.0 | escape-rate multiplier in a clustered run |
+| `sigma_p` | 0.25 | per-implementation noise on per-attempt success, in logit space |
+
+`sigma_p` is the `eps` term of §5's `p_impl` line. It is a **standard deviation**, matching the
+`theta ~ Normal(0, 1)` convention beside it; §5 writes that draw as `eps ~ Normal(0, 0.25)`, which is
+ambiguous between variance and standard deviation, and the standard-deviation reading is the one the
+implementation and the pinned figures use.
 
 **`lambda_e` and `lambda_f` are deliberately much larger than `lambda_p`.** Correlated failure of the gate is
 worth roughly an order of magnitude more in dollars than correlated failure of generation: an unfavourable
@@ -318,6 +330,13 @@ same size at the shipped defaults, which previously let two documents disagree a
 contained while still summing correctly. **The restructuring reserve is included too**: recommending a 5–10%
 reserve and then publishing totals that reserve nothing is not a defensible position.
 
+**The reserve is unconditional, and is not gated on Step 10.** `restructure_fraction` is a single
+organisation-wide parameter applied in every scenario, so scenario A carries a $6,780 reserve on a process
+that runs no repo-scope gate at all. §7 previously read as though Step 10 switched the term on. It does not,
+and the arithmetic above is what the pinned figures use, so the mapping table has been corrected rather than
+the equation. The direction flatters the recommendation, since it loads the baseline. A reserve keyed to
+Step 10 would be a defensible alternative model and is not this one; it would move every pinned total.
+
 `n_touches` counts human contacts, explicitly:
 
 ```
@@ -370,13 +389,13 @@ e_scale ×= (1 − p_cluster × cluster_mult) / (1 − p_cluster)   otherwise   
 target  = f_base + (1 − f_base) × q_rev                            the nominal review factor
 shifted = E_Z[ g(lambda_e + Z) + (1 − g(lambda_e + Z)) × q_rev ],  Z ~ Normal(0, 1)
           where g(t) = logistic(logit(f_base) − lambda_f × t)
-gamma   = target / shifted                             [1.0000 in A and B, 1.0279 in C,
+gamma   = target / shifted                             [1.0000 in A and B, 1.0278 in C,
 e_scale ×= gamma                                        1.0199 in D and D+]
 
 e_run   = clip(e_base × e_scale, 0, 1)
 
 --- per story, per implementation ---
-p_impl  = logistic(logit(p[class]) + lambda_p × theta + eps),  eps ~ Normal(0, 0.25)
+p_impl  = logistic(logit(p[class]) + lambda_p × theta + eps),  eps ~ Normal(0, sd = sigma_p = 0.25)
 A       = min(Geometric(p_impl), A_max)
 tokens += k[class] × A × L
 capped  = (A == A_max) AND Bernoulli(1 − p_impl)        P(capped) = (1 − p)^A_max
@@ -454,7 +473,7 @@ and so contaminates the very reduction being measured. A frozen escape source mu
 `gamma = 1` explicitly.
 
 **Mandatory property test, in two parts.** Monte Carlo alone cannot pin this tightly enough to be useful. The
-escape count is over-dispersed relative to binomial by 2.9x to 21.7x, so its standard error at 200,000
+escape count is over-dispersed relative to binomial by 3.0x to 22.4x, so its standard error at 200,000
 iterations is about 0.3% relative — meaning a realised-mean check has to allow roughly 1%, while the defect it
 must catch is only 2.0–2.7%. A factor of two is not a margin worth relying on. So the property is asserted
 twice, at two different precisions:
@@ -477,13 +496,15 @@ Repeat 10,000 times. Report P50 / P80 / P95 of total cost, and of each component
 
 **Vectorise across iterations, not across stories.** `theta`, `f_run` and the cluster indicator are drawn as
 arrays of length `iterations`; the story loop runs once per class rather than once per story, with per-class
-draws shaped `(iterations, n_stories_in_class)`. This keeps the common factor correctly shared within a run —
-one `theta` per row — while letting NumPy do the work. Drawing `theta` with shape `(iterations, n_stories)`
-would silently destroy the correlation the model exists to capture, and is the single easiest way to break
-this program without any test failing on shape.
+draws shaped `(iterations, n_stories_in_class, N_impl)` — the third axis because attempts and the token
+multiplier are drawn per implementation, not per story. This keeps the common factor correctly shared within
+a run — one `theta` per row — while letting NumPy do the work. Drawing `theta` with shape
+`(iterations, n_stories)` would silently destroy the correlation the model exists to capture, and is the
+single easiest way to break this program without any test failing on shape.
 
-Attempts are drawn with `rng.geometric(p)` and clipped at `A_max`; the clip is what creates the fallback
-branch, so count clipped draws rather than discarding them.
+Attempts are clipped at `A_max`, and the clip is what creates the fallback branch, so count clipped draws
+rather than discarding them. They are **not** drawn with `rng.geometric(p)`, which consumes a variable number
+of stream positions as `p` varies; the inverse-CDF form below is required for the same reason.
 
 **Variance decomposition** is computed by re-running with one random source at a time frozen at its mean and
 measuring the reduction in the P50→P95 spread.
@@ -534,29 +555,33 @@ estimator's own spread is ±0.7 points would be the same failure REVIEW.md S3-1 
 publishing a number the model does not support.
 
 **The decomposition is scenario-dependent, and quoting it for one scenario misleads.** At the shipped
-parameters, 150,000 iterations, reductions in the P50→P95 spread. A dash means the share did not exceed two of
-its own standard errors and so is not distinguishable from zero:
+parameters, 150,000 iterations, **seed 7**, reductions in the P50→P95 spread — reproduced by
+`python __main__.py --decompose --iterations 150000`. A dash means the share did not exceed two of its own
+standard errors and so is not distinguishable from zero:
 
 | Source frozen | A | B | C | D | D+ |
 |---|---|---|---|---|---|
-| **Escape** (`theta`, clustering, Bernoulli draw) | **70%** | **77%** | **43%** | **71%** | **46%** |
-| Criteria hours `S` | — | — | **9%** | — | **9%** |
-| `q_rev` | ~1% | ~1% | — | — | — |
+| **Escape** (`theta`, clustering, Bernoulli draw) | **70%** | **77%** | **44%** | **71%** | **47%** |
+| Criteria hours `S` | −1% | — | **9%** | — | **9%** |
+| `q_rev` | — | ~1% | — | — | — |
 | `d` | — | — | ~1% | ~1% | — |
 | `m` | — | — | — | — | — |
 | Token trajectory (`A`, `L`) | — | — | — | — | — |
 | Token `k_scale` | — | — | — | — | — |
 
-Standard errors are ±0.2 to ±0.4 on escape and ±0.4 to ±0.6 on `S`. The `~1%` entries appear on one seed and
-not another even at 150,000 iterations, so they are at the edge of what this estimator resolves and should be
-read as "small" rather than as a number.
+Standard errors are ±0.2 to ±0.4 on escape and ±0.4 to ±0.6 on `S`. The `~1%` entries, and A's `S` entry, appear
+on one seed and not another even at 150,000 iterations, so they are at the edge of what this estimator resolves
+and should be read as "small" rather than as numbers. **A share can come out slightly negative**, as A's `S`
+does here: freezing a source cannot widen the true spread, so a negative reduction that clears two standard
+errors is measuring residual bias in the estimator rather than a real effect, and the report prints it as it
+comes rather than clipping it at zero.
 
 Two things follow, and only the first was previously stated.
 
 **Escaped defects dominate in every scenario**, and by a wide margin in the four where the gate is either
 absent or carrying a normal escape rate. Nothing else comes close, at any iteration count.
 
-**But in C and D+ escape falls to 43–46%, and criteria authoring becomes the clear second driver at 9%.**
+**But in C and D+ escape falls to 44–47%, and criteria authoring becomes the clear second driver at 9%.**
 This is not noise and it is not an artefact — it is the same arithmetic seen from the other end. C carries
 `S_manual` = 3.0, which makes criteria its single largest cost line at about $69,800; D+ has the lowest escape
 rate in the set at 0.89%, so the same fixed spread in `S` is a much larger fraction of a much smaller total.
@@ -639,24 +664,33 @@ should be pinned separately from the P50, which on a right-skewed distribution s
 
 Savings against A: B 26%, C 38%, **D 66%**, D+ 62%.
 
-**Monte Carlo, full uncertainty** — 40,000 iterations, seed 7:
+**Monte Carlo, full uncertainty** — 40,000 iterations, seed 7. **Two columns, and the distinction matters.**
+*Published* is the briefing set's figure, which is what `tests/fixtures/montecarlo.json` pins, to a 2%
+relative tolerance. *This build* is what `python __main__.py --iterations 40000` prints. The two differ by
+sampling error and not by model: the published figures were generated by a reference implementation that
+consumes its random stream in a different order, so agreement to the digit was never available and the
+fixture never asked for it.
 
-| Scenario | P50 | P80 | P95 | P95/P50 |
-|---|---|---|---|---|
-| A | $197,600 | $243,900 | $369,800 | 1.87 |
-| B | $143,400 | $179,000 | $279,200 | 1.95 |
-| C | $130,400 | $155,900 | $197,500 | 1.52 |
-| D | **$68,800** | **$85,000** | **$120,000** | 1.74 |
-| D+ | $80,800 | $90,300 | $104,600 | **1.29** |
+| Scenario | P50 published | P50 this build | P80 published | P80 this build | P95 published | P95 this build | P95/P50 |
+|---|---|---|---|---|---|---|---|
+| A | $197,600 | $197,249 | $243,900 | $243,690 | $369,800 | $370,015 | 1.88 |
+| B | $143,400 | $143,199 | $179,000 | $178,877 | $279,200 | $281,796 | 1.97 |
+| C | $130,400 | $130,694 | $155,900 | $156,586 | $197,500 | $199,094 | 1.52 |
+| D | **$68,800** | **$69,097** | **$85,000** | **$84,918** | **$120,000** | **$121,930** | 1.76 |
+| D+ | $80,800 | $80,886 | $90,300 | $90,320 | $104,600 | $105,028 | **1.30** |
+
+The largest gap is B's P95 at 0.9%, and every one is inside the fixture's 2%. The P95/P50 column is this
+build's; the published ratios were 1.87 / 1.95 / 1.52 / 1.74 / 1.29.
 
 **Two results the corrected model produces that the earlier one could not.**
 
-**D's P95 sits below A's P50.** $120,000 against $197,600 — the recommendation's bad case beats the
-alternative's median, which is a stronger claim than comparing against a point estimate.
+**D's P95 sits below A's P50.** $121,900 against $197,200 — the recommendation's bad case beats the
+alternative's median, which is a stronger claim than comparing against a point estimate. The report asserts
+this comparison from the run rather than quoting it, so it cannot go stale.
 
-**D+ costs more at the P50 and less at the P95.** $80,800 versus $68,800 at the median; $104,600 versus
-$120,000 at the 95th percentile. **Deliberate quality investment buys tail reduction, not expected-value
-reduction** — you pay about $12,000 at the median to remove about $15,000 of tail. That is the correct way to
+**D+ costs more at the P50 and less at the P95.** $80,900 versus $69,100 at the median; $105,000 versus
+$121,900 at the 95th percentile. **Deliberate quality investment buys tail reduction, not expected-value
+reduction** — you pay about $11,800 at the median to remove about $16,900 of tail. That is the correct way to
 present D+ to a risk-averse decision-maker, and it was invisible while the escape scaling was uncentred.
 
 With `--uncertainty aleatory`, D gives P50 $68,600 / P95 $121,000 — so **parameter uncertainty adds about 1% to
@@ -678,28 +712,97 @@ the bolt-on baseline.
 **They are substantially superadditive, and savings fractions do not add.** The correct null for two
 independent interventions is multiplicative: `1 − (1 − 0.26)(1 − 0.38)` = **54%**. D delivers 66%, so the
 synergy is **+12 percentage points**, not the +1 that an additive comparison suggests. Better specifications
-reduce escapes and better oracles catch specification ambiguity, so each raises the return on the other. **These figures are pinned in `tests/fixtures/`.** A change that moves them is either a bug or a
-decision to record in §11.
+reduce escapes and better oracles catch specification ambiguity, so each raises the return on the other.
+
+**Those three numbers are the deterministic ones. The program prints the P50 ones**, because
+`superadditivity()` takes its savings from the Monte Carlo P50 by default: null **52%**, realised **65%**,
+synergy **+13 points** at 40,000 iterations and seed 7. Both readings are correct and they answer slightly
+different questions — the deterministic one is a property of the parameters, the P50 one a property of the
+run. Quote whichever, but say which. **These figures are pinned in `tests/fixtures/`.** A change that moves
+them is either a bug or a decision to record in §11.
 
 ---
 
 ## 7. How the model relates to the ten steps
 
-Each step either changes a parameter or adds a cost term. This table is the model's connection to the process,
-and every row should be traceable in the code.
+Each step either changes a parameter or adds a cost term. This table is the model's connection to the process.
+**The third column says how the effect actually reaches the arithmetic**, because the two routes are not
+equally strong and an earlier version of this table did not distinguish them:
 
-| Step | Effect in the model |
-|---|---|
-| **1** System specification | Lowers `k` (cached prefix) and raises `p`; adds `spec_hours` |
-| **2** Criteria vs governing sources | `d_base` → `d_specced`; `S_manual` → `S_oracled`; adds decide tokens |
-| **3** Completeness sweep | Included in the Step 2 effect on `S` and `d`; adds the adjudication touch |
-| **4** Program design and slicing | Contributes to the `d` reduction and to reuse; not separately parameterised |
-| **5** Frozen acceptance suite | `rho` 0.70 → 0.20; switches `k`/`p` from unfrozen to frozen |
-| **6** Mutation scoring + different route | `m_unscored` → `m_scored`; `rho` 0.20 → 0.05; adds oracle tokens |
-| **7** N implementations, compared | Sets `N_impl`; multiplies generation tokens; adds crosstest tokens |
-| **8** Tiered gate | Sets `f_base`; `R_large` → `R_gated` |
-| **9** Integration verification | Adds integration tokens; caps WIP (reported, not costed) |
-| **10** Repo-scope gates | Adds the restructuring reserve; design decay itself is out of scope |
+- **derived** — `scenarios.select_tables()` computes it from which steps are active, so switching the step
+  off changes it. Trace it in `scenarios.py`.
+- **declared** — the value sits in `SCENARIO_POLICY` per scenario. It is *correlated* with the step rather
+  than derived from it: a scenario that ran the step differently would need the number entered by hand.
+- **absent** — the effect is stated in the process and is not in the model at all.
+
+| Step | Effect in the model | Route |
+|---|---|---|
+| **1** System specification | Adds `spec_hours` (0 / 40 / 80 / 80 / 80) | declared |
+| **2** Criteria vs governing sources | `d_base` → `d_specced`; `S_manual` → `S_oracled` | derived, jointly with Step 3 |
+| | Adds decide tokens | declared |
+| **3** Completeness sweep | Folded into Step 2: both must be active for either effect | derived |
+| **4** Program design and slicing | Nothing | absent |
+| **5** Frozen acceptance suite | `k_unfrozen` → `k_frozen`, and `p` to its frozen table | derived |
+| | Collapses `rho` | declared |
+| **6** Mutation scoring + different route | `m_unscored` → `m_scored` → `m_deep`, by intensity | derived |
+| | Collapses `rho` further; adds oracle tokens | declared |
+| **7** N implementations, compared | Adds the adjudication touch (`adjudication_rate`, else 0) | derived |
+| | Sets `N_impl`, which multiplies generation tokens; adds crosstest tokens | declared |
+| **8** Tiered gate | `R_large` → `R_gated` | derived |
+| | Sets `f_base` | declared |
+| **9** Integration verification | Adds integration tokens | declared |
+| **10** Repo-scope gates | Adds repo-scope tokens | declared |
+
+`architecture_hours` appears in no row because it belongs to no step: it is declared per scenario (40 / 40 /
+40 / 10 / 10) and falls where the process is fully automated, so it reads as a *credit* the steps earn rather
+than a cost any one of them adds.
+
+**Four rows this table used to claim, which the code does not implement.** They are recorded here rather
+than quietly dropped, because each is a real effect the process has and the model does not:
+
+1. **Step 1 does not lower `k` or raise `p`.** `k` is selected by Step 5 alone and `p` by the pair
+   (Step 5, Steps 2–3). The cached-prefix saving a system specification buys is not modelled, and Step 1's
+   only cost consequence is `spec_hours`. Since Step 1 is active in every scenario except A, nothing in the
+   shipped set can distinguish its effect anyway.
+2. **The adjudication touch belongs to Step 7, not Step 3.** §4.4 gates `n_adjudications` on
+   cross-implementation comparison, and the implementation follows §4.4. A flagged question is raised by the
+   comparison, not by the completeness sweep.
+3. **The restructuring reserve is not gated on Step 10.** `restructure_fraction` applies in every scenario,
+   including A — see §4.4.
+4. **Step 9 does not cap WIP.** The table claimed a WIP cap "reported, not costed". Nothing in the model or
+   the report computes or prints one.
+
+**Neither `rho` nor `f_base` is derived from the steps**, and this is the weakest joint in the model's
+connection to the process. §3.6 gives `rho` as a menu and §6 reads a value off it per scenario, so the whole
+value of the verification apparatus — the thing Steps 5 and 6 exist to buy — arrives as a hand-entered
+number. The five shipped scenarios are also a fixed set: `SCENARIO_STEPS` names them, and there is no way to
+declare an arbitrary combination of steps and have the parameters follow. Asking "what does Step 5 buy
+without Step 6?" therefore requires editing `scenarios.py` and entering a `rho` by hand, which is the
+copy-and-edit CLAUDE.md §8 forbids. Deriving `rho` and `f_base` from the active steps, and admitting an
+arbitrary step set, is the change that would make this section fully true. It is not taken here.
+
+**`N_impl` costs tokens and does not enter the escape equation.** Raising N from 1 to 3 to 5 changes cost and
+no modelled outcome; D+'s quality gain comes entirely from `rho` 0.05 → 0.02 and `m` 0.06 → 0.02, which the
+process attributes to formal methods and deeper mutation. The real benefits of more implementations —
+best-of-N selection and ambiguity detection — are not modelled, so **the model understates D+ in particular**.
+Adding best-of-N selection (`d_effective = d^N_eff` on the dimensions the oracle set discriminates) is the
+obvious extension and is deliberately not taken, because `N_eff` depends on `rho`, which is an input rather
+than a measurement.
+
+**The apparatus is priced as it runs, not as it is built.** Every apparatus line is a fixed per-epic token
+constant, and the only human hours attributed to standing the apparatus up are `spec_hours` and
+`architecture_hours`. There is no cost term for building or maintaining the frozen suites, the mutation
+harness, the second derivation route, the gate, or the conformance graph, and no capital-versus-recurring
+split: the first epic under D pays the same apparatus cost as the tenth. **The model therefore answers what
+an epic costs once the process is already running, and not what the transition costs.** Two consequences
+worth stating whenever the output is presented. Since the apparatus lines are constants, the savings shrink
+with portfolio size — at 20 stories rather than 160, C and D+ come out *more* expensive than A — so the
+scale the figures are quoted at is part of the claim. And since those lines are POLICY, they contribute
+exactly zero to the variance decomposition (§5), so the model cannot show the risk of the apparatus build
+overrunning; only `--sensitivity` can probe it. For scale: at the shipped defaults D beats A by $143,900, so
+it would take 960 engineer-hours of unpriced scaffolding to overturn that ordering, and the recommendation is
+robust. D+ costs $8,100 *more* than D, a gap of only 54 hours, so **that** ordering is not robust to any
+scaffolding cost at all — and D+ is the scenario whose apparatus is by far the largest.
 
 **`N_impl` costs tokens and does not enter the escape equation.** Raising N from 1 to 3 to 5 changes cost and
 no modelled outcome; D+'s quality gain comes entirely from `rho` 0.05 → 0.02 and `m` 0.06 → 0.02, which the
@@ -724,7 +827,7 @@ Say so when reporting.
 | `k`, `p` per class | **Metered spikes.** Run 2–3 representative stories per class against the real repository and log turns, attempts, and tokens. At $10–50 per spike the information is nearly free relative to what it decides. |
 | `d` | Failure rate of fresh implementations against the oracle set, divided by the mutation score: `d = F / mutation_score`. |
 | `m` | `1 − mutation score`, straight off the mutation-testing run. |
-| `rho` | The menu in §3.5. Not measured — chosen by how you structure verification. |
+| `rho` | The menu in §3.6. Not measured — chosen by how you structure verification. |
 | `q_rev` | The sampled-review stream (Step 8, V12) is the only unbiased source. Measure it; it is not zero. |
 | `S`, `R`, `I` | Time-tracking on an instrumented epic. `I` from the incident record. |
 | `f` | Observed auto-merge fraction once the gate is running. Before that, a policy target. |
@@ -759,6 +862,9 @@ State these whenever the output is presented.
   FTE alongside cost so this is not misread.
 - **Recalibration after a model change.** A model upgrade invalidates every calibrated parameter at once.
   Budget it per upgrade, not per quarter.
+- **The cost of building the apparatus.** Every apparatus line is a per-epic running cost and the model
+  carries no term for standing the process up — see §7. It prices an epic under a process already in place,
+  not the transition to it.
 
 ---
 
@@ -767,17 +873,55 @@ State these whenever the output is presented.
 Default text report, per scenario:
 
 1. Cost P50 / P80 / P95, and P95/P50
-2. Component breakdown at P50: tokens, criteria, review, incidents, spec, switch, fallback, restructure
-3. Token share of total
+2. Component breakdown at P50: tokens, criteria, review, incidents, spec, architecture, switch, fallback,
+   restructure — nine lines, in that order
+3. Token share of total, beside mean total tokens
 4. Derived `e` and predicted escaped-defect count
-5. Fallback count and its hours
-6. Variance decomposition
-7. FTE at a stated calendar duration
+5. Fallback count; its cost appears in the breakdown, and its hours are inside the total
+6. Variance decomposition, each share with the standard error of its own estimator, only when `--decompose`
+   is given
+7. FTE at a stated calendar duration, taken from the deterministic hours
 
-Plus a comparison table across all scenarios, and the marginal saving of each against (a).
+Plus a comparison table across all scenarios, the marginal saving of each against the baseline, the
+multiplicative superadditivity null, the two headline comparisons of §6 asserted from the run rather than
+quoted, and the caveats of §9. The saving column is dropped, with the reason printed, when the baseline
+scenario was not among those run.
 
-`--format csv` emits one row per scenario per percentile. `--sensitivity PARAM` re-runs across a range for one
-parameter and reports the effect on P50 and P95.
+### Command-line surface
+
+The whole of it, since §10 is the only place the program's interface is specified:
+
+| Flag | Effect |
+|---|---|
+| `--scenario NAME` | run one scenario; repeatable. Default: all five |
+| `--iterations N` | Monte Carlo iterations (default 10,000) |
+| `--seed N` | random seed (default 7); identical seeds give byte-identical output |
+| `--stories R S H` | portfolio counts (default 80 56 24) |
+| `--uncertainty full\|aleatory\|none` | per §3.5; `aleatory` switches parameter uncertainty off |
+| `--deterministic` | shorthand for `--uncertainty none`, and prints the point-estimate table |
+| `--decompose` | add the §5 variance decomposition; one extra run per random source |
+| `--set NAME=VALUE` | override a parameter; repeatable. Per-scenario policy as `scenario.parameter` |
+| `--config FILE` | a JSON object of the same overrides, applied before `--set`. Keys beginning with an underscore are comments, since JSON has none |
+| `--sensitivity PARAM` | sweep one parameter across its declared range, reporting P50, P95, `e` and escapes |
+| `--points N` | sweep points for `--sensitivity` (default 9) |
+| `--format text\|csv` | CSV emits one row per scenario per percentile |
+| `--no-caveats` | suppress the §9 block. Not advised |
+| `--list-params` | print the registry — value, range, kind, provenance — and exit |
+| `--list-steps` | print which of the ten steps each scenario activates, and exit |
+
+**Three parameters cannot be swept over their own declared range**, because `params.validate()` rejects
+points inside it: `q_rev` (its low is 0, and the Beta of §3.5 needs `sd² < mean(1−mean)`), and `p_cluster`
+and `cluster_mult` (whose ranges each reach a product ≥ 1, where no mean-preserving cluster pair exists).
+The program raises rather than substituting a default, which is the §8 behaviour, but the declared range is
+then not a sweepable range. `montecarlo.sensitivity()` takes `low` and `high` to work around it; the CLI does
+not expose them. Either narrowing those three ranges or exposing the bounds would close it.
+
+### Public API
+
+`montecarlo.run_scenario`, `montecarlo.run_all`, `montecarlo.deterministic_all`,
+`montecarlo.savings_against_baseline`, `montecarlo.superadditivity`, `montecarlo.sensitivity`,
+`scenarios.resolve_scenario` and `params.default_params`. All return plain dicts and floats. CLAUDE.md §9
+names a shorter list written before the no-classes decision; this is the current surface.
 
 ---
 
@@ -794,10 +938,22 @@ Record any change that moves a pinned figure, with the reason.
 | 2026-08-17 | **No classes anywhere in the implementation,** at the owner's instruction. `Scenario`, `Params` and `Result` — named as public API in CLAUDE.md §9 — become plain dicts built by `resolve_scenario()`, `default_params()` and `run_scenario()`. Supersedes CLAUDE.md §10's dataclass rule. | None. Representation only. |
 | 2026-08-17 | **Layout extended by one module.** CLAUDE.md §3 fixes a five-file layout and §9 caps a module at 400 lines; the parameter registry with mandatory provenance strings plus the ten-step resolution does not fit in one file. Split into `params.py` (records) and `scenarios.py` (steps → parameter selection). Dependency direction unchanged and still one-way. | None. |
 | 2026-08-17 | **`EPISTEMIC` admitted as a fourth provenance kind.** CLAUDE.md §5 says kind is "exactly one of" PRICE / CALIBRATED / POLICY, while §3.5 above declares `kind = EPISTEMIC`. SPEC governs, so the registry accepts four kinds. | None. |
-| 2026-08-17 | **Checked against the supplied `reference_model.py` after the build.** It independently confirms `b` = 6 and the per-scenario `p` tables that §3.3 lacked — A 0.85/0.50/0.28, C 0.90/0.65/0.40, D and D+ 0.92/0.70/0.45, all recovered here before that file was opened. It also confirms the touch counting, the restructure base, and the `min(2, N_impl)` fallback rule. `p_unfrozen_specced` was adopted from it at 0.87/0.54/0.32, replacing an independent fit of 0.88/0.545/0.318 that met every pin equally well; the reference's values are the ones that generated the published figures. | **None.** The deterministic pass now agrees with `reference_model.py` on all 70 figures across all five scenarios to 1.8e-16, and the Monte Carlo P50/P95 agree to within 1.2% — sampling error, since the two consume their streams in different orders. Pinned by `tests/test_reference_model.py`. |
+| 2026-08-17 | **Checked against the supplied `reference_model.py` after the build.** It independently confirms `b` = 6 and the per-scenario `p` tables that §3.3 lacked — A 0.85/0.50/0.28, C 0.90/0.65/0.40, D and D+ 0.92/0.70/0.45, all recovered here before that file was opened. It also confirms the touch counting, the restructure base, and the `min(2, N_impl)` fallback rule. `p_unfrozen_specced` was adopted from it at 0.87/0.54/0.32, replacing an independent fit of 0.88/0.545/0.318 that met every pin equally well; the reference's values are the ones that generated the published figures. | **None.** The deterministic pass now agrees with `reference_model.py` on all 70 figures across all five scenarios to 1.8e-16, and the Monte Carlo P50/P95 agree to within 1.2% — sampling error, since the two consume their streams in different orders. Pinned by `tests/test_reference_model.py`. *[Both counts corrected on 2026-08-18: the test compares 80 figures, not 70, and the Monte Carlo bound is no longer 1.2% — see the entry below.]* |
 | 2026-08-17 | **§3.5 — the epistemic lognormals restated as mean-preserving.** The table said "median = nominal" and the note beneath it said `mu = ln(nominal) − σ²/2`; those are different distributions and a builder had to pick one. The note governs, per CLAUDE.md §6. | None. The note was already what the pinned figures used. |
 | 2026-08-17 | **§5 — a third mean error found, of the S1-1 family, and CORRECTED.** `e_base` and `e_scale` are both functions of the same `theta` and negatively correlated through it, so centring each one individually does not make their product mean-preserving. `E[e_run]` sat 1.95% below derived `e` in D and D+ and 2.71% below in C; A and B were exact because `f` = 0 there. The covariance term is 3-4x the `f` Jensen term it was previously lumped in with. REVIEW.md S1-1 caught the two marginal mean errors and missed this one. Corrected by a scalar `gamma = target / shifted`, evaluated once per scenario: Cameron-Martin turns `E[g(Z)exp(lambda_e Z - lambda_e^2/2)]` into `E[g(Z + lambda_e)]`, so the exponential leaves the integrand and no quadrature is needed in the hot loop. `gamma` is 1.0000 in A and B, 1.0279 in C, 1.0199 in D and D+. It removes the `f` Jensen term at the same time. | **None to the deterministic pins**, which do not use `theta`, and none to A or B, where `gamma` is exactly 1. The Monte Carlo P50s for C, D and D+ move by under 0.6% and their P95s by under 1.4%, all still inside the 2% fixture tolerance. The mean-preservation test is tightened from 4% to **0.5% for all five scenarios**. |
 | 2026-08-17 | **§5 — the variance decomposition had a noise floor larger than every share it was measuring, from broken common random numbers.** Two causes, both silent. NumPy's `Generator.geometric` consumes a *variable* number of stream positions as `p` varies, and `Generator.binomial` switches algorithm around `n·p = 30` and does likewise, so a perturbed draw desynchronised every draw after it. And the chunked run used one continuous stream, so any residual desynchronisation in chunk *k* corrupted every later chunk: measured coupling was exactly `1/n_chunks`, meaning at three chunks two thirds of the run was uncorrelated noise. Freezing `d` visibly moved criteria hours and generation tokens, which `d` cannot affect. Fixed by inverse-CDF draws for the geometric and for the reviewed and escaped counts, one generator per draw site, and independent seeding per chunk. | Noise floor **±2.0 -> ±0.8** percentage points at 40,000 iterations. Escape share 71.6% -> **71.0%**, the difference being noise that had been read as signal. Monte Carlo figures shift by sampling error only, since the draws are the same distributions from a different stream; all fixture pins still hold. Deterministic pins untouched. |
 | 2026-08-17 | **§5 — the variance decomposition restated per scenario, and the README corrected.** The single-scenario table generalised scenario D to the whole model, which is wrong: escape dominates everywhere but ranges from 43% to 77%, and in C and D+ it falls to 43-46% while criteria authoring `S` resolves as a clear second driver at 9%. C carries the unaided `S_manual` = 3.0, making criteria its largest cost line at about $69,800; D+ has the lowest escape rate in the set at 0.89%, so the same spread in `S` is a larger share of a smaller total. The reading is that once the apparatus has suppressed escaped defects, the next largest uncertainty is criteria-authoring time — a Step 2-3 question, and among the cheaper parameters to measure (§8). Found by running the full report rather than by inspection; a reader shown only D would conclude there was nothing left to attack. | No figure moves. It corrects a claim in README.md that every non-escape source is below what the estimator resolves, which held for D and not for C or D+. Pinned by `test_the_decomposition_is_scenario_dependent`. |
 | 2026-08-17 | **§5 — every variance share now carries the standard error of its own estimator**, by paired bootstrap over the iteration axis at no extra simulation cost. At 40,000 iterations only escape clears two standard errors; every other source is below what the estimator can resolve. The report names them as unresolved instead of quoting them. | None to any figure. It stops the report publishing numbers the model does not support — the failure REVIEW.md S3-1 found in the original, in a subtler form. |
 | 2026-08-17 | **§5 — the variance decomposition froze the escape source at its median rather than its mean.** Setting `theta = 0` leaves `e_scale = exp(-lambda_e^2/2)` = 0.860, so the frozen run sat 14% below the derived escape rate and the freeze changed the level as well as the spread. Found while correcting the covariance term; same mean-versus-median family. A frozen escape source now sets `e_scale = 1` and `gamma = 1` explicitly. | Moves the reported escape variance share, which was measured against a contaminated counterfactual. Everything else is unaffected: no other freeze target had this problem, and no reported cost changes. |
+| 2026-08-18 | **Documentation reconciliation against the built code.** `SPEC.md`, `CLAUDE.md`, `README.md` and `REVIEW.md` were audited line by line against the implementation and every divergence resolved in favour of the code, since the code passes 787 tests including an acceptance suite derived from this document. The rows below record each one. No code was changed, so **no pinned figure moves anywhere in this entry**. | **None.** |
+| 2026-08-18 | **§3.3 — `p_unfrozen_specced` Standard corrected to 0.54** in the four-table block. The registry has carried 0.54 since the entry of 2026-08-17 below, which adopted `reference_model.py`'s values; the §3.3 table was never updated and still read 0.55. | None. 0.54 is the value the pinned figures were computed with. |
+| 2026-08-18 | **§3.3 — `A_max` moved from the CALIBRATED block to POLICY**, matching the registry and §8, which already called it a policy. **`n_compare_min` (2) and `sigma_p` (0.25) declared** in §3.3 and §3.4; both are in the registry and neither was stated here, so §3 described 54 of the 56 parameters. `sigma_p` is stated to be a standard deviation, resolving the `Normal(0, 0.25)` ambiguity in §5. | None. |
+| 2026-08-18 | **§4.4 and §7 — the restructuring reserve is unconditional, not a Step 10 effect.** `restructure_fraction` is applied in every scenario, including A, which runs no repo-scope gate; §7 read as though Step 10 switched it on. §4.4's equation is what the pinned totals use, so the mapping table was corrected rather than the arithmetic. Noted that the direction loads the baseline and so flatters the recommendation. | None. Correcting §7 instead of §4.4 is what keeps A's pinned $218,600 intact. |
+| 2026-08-18 | **§5 — `gamma` for C corrected to 1.0278** (computed 1.027823; D and D+ are 1.019853, which the stated 1.0199 already rounds to). **Over-dispersion restated as 3.0x to 22.4x**, from 2.9x to 21.7x: measured 22.4 / 18.3 / 7.5 / 6.5 / 3.0 across A to D+. **The decomposition table refreshed** at 150,000 iterations and seed 7, which the table now states: escape 44% in C and 47% in D+ against 43% and 46%, both inside their own standard errors. A negative share is noted as possible and explained. | None. These are reported quantities, not pinned ones; the fixture bounds on the escape share are wide enough to cover both readings. |
+| 2026-08-18 | **§6 — the Monte Carlo table given a second column for this build's own output.** The single column was the briefing set's published figures, which `tests/fixtures/montecarlo.json` pins to a 2% relative tolerance because the two implementations consume their streams in different orders. A reader could not tell whether a 0.9% gap was drift or design. Both columns now appear, with the largest gap named. The §6 prose figures follow this build. | None. Both columns were already true; only one was shown. |
+| 2026-08-18 | **§6 — the superadditivity figures given their convention.** §6's 54% / 66% / +12 points is the deterministic reading, which `tests/fixtures/deterministic.json` pins. The program prints the P50 reading — 52% / 65% / +13 points — because `superadditivity()` defaults to `at="p50"`. Both are correct and answer different questions; neither was labelled. | None. |
+| 2026-08-18 | **§7 rewritten: the ten-step mapping now distinguishes derived from declared effects**, and names the four rows the code does not implement — Step 1's effect on `k` and `p`, the adjudication touch's attribution to Step 3 rather than Step 7, the restructuring reserve's attribution to Step 10, and Step 9's WIP cap, which nothing computes or prints. Records that `rho` and `f_base` are hand-entered per scenario rather than derived from the steps, and that `SCENARIO_STEPS` is a fixed set of five, so an arbitrary step combination cannot be priced. Adds the statement that the apparatus is priced as it runs and not as it is built, with the portfolio-scale and zero-variance consequences that follow, and a matching bullet in §9. | None. §7 was describing an intended mapping; it now describes the implemented one. |
+| 2026-08-18 | **§10 — the command-line surface and public API specified.** Neither was in this document, which claims no behaviour exists in the code that is not stated here. Records that `q_rev`, `p_cluster` and `cluster_mult` cannot be swept over their own declared ranges, because `params.validate()` rejects points inside them and the CLI does not expose `sensitivity()`'s `low` and `high`. That is a code defect, left open. | None. |
+| 2026-08-18 | **`escape.py` recorded as a seventh module.** CLAUDE.md §3 fixes the layout and the entry of 2026-08-17 below logged the split into `params.py` and `scenarios.py`; the later split of the escape equation and its mean-preserving scalings out of `model.py` — forced by the same 400-line cap when the covariance correction landed — was never logged. Dependency direction is unchanged and still one way: `params -> scenarios -> escape -> model -> montecarlo -> report -> __main__`, checked by `tests/test_deps.py`. | None. Representation only. |
+| 2026-08-18 | **The agreement with `reference_model.py` restated.** The entry of 2026-08-17 says 70 figures and 1.2%; the test compares **80** (16 quantities × 5 scenarios) and the worst relative deviation on the deterministic pass is 1.81e-16, so that half stands. The 1.2% does not: it was measured before `gamma`, and the two divergences now have different causes. Where `gamma` = 1 — A and B, which have `f` = 0 — the two are the same model and diverge by **under 1.0%**, pure sampling error from a different stream order. In C, D and D+ this build reads **up to 1.6% higher**, and that part is deliberate: the supplied reference predates the §5 covariance correction, so its escape rate runs 2–3% below its own derived `e`. `tests/test_reference_model.py` asserts that the reference carries that defect rather than assuming it. | None. |
+| 2026-08-18 | **§5 — two stale statements corrected.** The vectorisation paragraph said attempts are drawn with `rng.geometric(p)`, which the common-random-numbers entry of 2026-08-17 had already replaced with an inverse-CDF draw twenty lines below it; and it gave the per-class draw shape as `(iterations, n_stories_in_class)`, omitting the `N_impl` axis that the per-implementation rule requires. The `eps` draw is now written with `sd = sigma_p` rather than as `Normal(0, 0.25)`. | None. Both described the implementation incorrectly; neither was what the code did. |

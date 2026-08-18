@@ -29,7 +29,7 @@ Every parameter is configurable, carries its provenance, and declares the range 
 sweeping it is meaningful:
 
 ```bash
-python __main__.py --list-params         # all 56 parameters: value, range, kind, source
+python __main__.py --list-params         # all 56 global parameters, then the per-scenario policy block
 python __main__.py --list-steps          # which of the ten steps each scenario activates
 python __main__.py --set w=200 --set b=1 # override anything; b=1 makes every touch an interruption
 python __main__.py --set all_three.oracle_tokens=900e6    # per-scenario policy
@@ -44,6 +44,14 @@ it unedited and you get the shipped defaults; copy it and change the ones you ha
 An unknown parameter name raises rather than defaulting, and an integer parameter refuses a
 fractional override rather than truncating it — silently accepting `A_max=5.5` would make a
 published total irreproducible from the parameter you thought you set.
+
+**Three parameters cannot be swept over their own declared range**, and the program raises
+rather than quietly clamping: `--sensitivity q_rev`, `--sensitivity p_cluster` and
+`--sensitivity cluster_mult`. Each range reaches a point the model has no answer at — a
+`q_rev` of 0 admits no Beta with the shipped standard deviation, and a `p_cluster ×
+cluster_mult` of 1 or more admits no mean-preserving cluster pair. Sweep them from Python
+instead, where `montecarlo.sensitivity()` takes `low` and `high`; the CLI does not yet expose
+those bounds. Everything else in the registry sweeps as documented.
 
 ---
 
@@ -99,15 +107,16 @@ same margin, and the second driver is not the same either:
 
 | Source frozen | A | B | C | D | D+ |
 |---|---|---|---|---|---|
-| **Escape** | **70%** | **77%** | **43%** | **71%** | **46%** |
+| **Escape** | **70%** | **77%** | **44%** | **71%** | **47%** |
 | Criteria hours `S` | — | — | **9%** | — | **9%** |
 
 A dash means the share did not clear two standard errors of its own estimator and so is not distinguishable
 from zero. Every share is printed with that standard error, from a paired bootstrap over the iteration axis,
 and the report names unresolved sources rather than quoting each a spurious one percent. Raising
-`--iterations` shrinks the errors as `1/sqrt(n)`.
+`--iterations` shrinks the errors as `1/sqrt(n)`. The table above is 150,000 iterations at seed 7:
+`python __main__.py --decompose --iterations 150000`.
 
-**In C and D+, escape falls to 43–46% and criteria authoring becomes the clear second driver.** C carries the
+**In C and D+, escape falls to 44–47% and criteria authoring becomes the clear second driver.** C carries the
 unaided `S_manual` = 3.0, which makes criteria its largest single cost line; D+ has the lowest escape rate in
 the set, so the same spread in `S` is a larger share of a smaller total. Once the apparatus has suppressed
 escaped defects, **the next largest uncertainty is how long it takes humans to write criteria** — and that is
@@ -148,7 +157,7 @@ Replace them in this order, easiest and highest-value first:
 4. **`k` and `p` per class** — two or three metered spikes per class against your real repository. At $10–50
    a spike this is the cheapest decision-relevant information available anywhere in this exercise.
 5. **`S`, `R`, `I`** — time-tracking on one instrumented epic.
-6. **`rho`** — not measured. Read it off the menu in `SPEC.md` §3.5 according to how you have structured
+6. **`rho`** — not measured. Read it off the menu in `SPEC.md` §3.6 according to how you have structured
    verification.
 7. **`lambda_e`, `lambda_f`, `p_cluster`** — the hardest, and they need several epics of history. Until then
    they are structural assumptions; run `--sensitivity` on them rather than believing the defaults.
@@ -172,27 +181,50 @@ Say these aloud whenever you present a number from it.
 - **The value of Steps 4, 9 and 10.** Reuse, cross-story defect detection, and design conformance are real
   but poorly quantified, so they are under-parameterised. The model therefore **understates** the case for the
   full process rather than overstating it.
+- **The cost of building the apparatus.** Every apparatus line is a fixed per-epic *running* cost. Nothing
+  here prices the engineering time to build or maintain the frozen suites, the mutation harness, the second
+  derivation route, the gate or the conformance graph, and there is no split between the first epic and the
+  tenth. **This model prices an epic under a process already running, not the transition to it.** Two things
+  follow. Because the apparatus lines are constants, the savings shrink as the portfolio shrinks — at 20
+  stories rather than 160, C and D+ come out more expensive than A — so the scale is part of the claim. And
+  because those lines are POLICY, they contribute zero variance by construction, so the model cannot show the
+  risk of the build overrunning. For scale: D beats A by $143,900, so overturning that ordering would take
+  960 engineer-hours of unpriced scaffolding, and the recommendation is robust. D+ costs $8,100 *more* than
+  D — a gap of 54 hours — so **that** ordering is not robust to any scaffolding cost at all, and D+ is the
+  scenario whose apparatus is by far the largest.
 
 ---
 
 ## How this maps to the ten-step process
 
-Every step changes a parameter or adds a cost term:
+Every step changes a parameter or adds a cost term. **How it reaches the arithmetic matters**: *derived*
+means `scenarios.select_tables()` computes it from which steps are active, so switching the step off changes
+it; *declared* means the value sits in `SCENARIO_POLICY` per scenario and is correlated with the step rather
+than derived from it.
 
-| Step | Model effect |
-|---|---|
-| 1 System specification | Lowers `k`, raises `p`, adds amortised hours |
-| 2 Criteria vs governing sources | Lowers `d` and `S`, adds Decide tokens |
-| 3 Completeness sweep | Folded into the Step 2 effect; adds the adjudication touch |
-| 4 Program design and slicing | Contributes to the `d` reduction |
-| 5 Frozen acceptance suite | Drops `rho` sharply; switches `k`/`p` to the frozen values |
-| 6 Mutation scoring + a check from another route | Drops `m` and `rho` further; adds oracle tokens |
-| 7 N implementations, compared | Sets `N_impl`; adds generation and cross-testing tokens |
-| 8 Tiered gate | Sets `f`; changes what "review" means and therefore `R` |
-| 9 Integration verification | Adds integration tokens |
-| 10 Repo-scope gates | Adds the restructuring reserve |
+| Step | Model effect | Route |
+|---|---|---|
+| 1 System specification | Adds amortised spec hours | declared |
+| 2 Criteria vs governing sources | Lowers `d` and `S` | derived, with Step 3 |
+| | Adds Decide tokens | declared |
+| 3 Completeness sweep | Folded into Step 2: both must be active for either effect | derived |
+| 4 Program design and slicing | Nothing | absent |
+| 5 Frozen acceptance suite | Switches `k`/`p` to the frozen tables | derived |
+| | Drops `rho` sharply | declared |
+| 6 Mutation scoring + a check from another route | Drops `m` | derived |
+| | Drops `rho` further; adds oracle tokens | declared |
+| 7 N implementations, compared | Adds the adjudication touch | derived |
+| | Sets `N_impl`, so generation tokens; adds cross-testing tokens | declared |
+| 8 Tiered gate | Changes what "review" means and therefore `R` | derived |
+| | Sets `f` | declared |
+| 9 Integration verification | Adds integration tokens | declared |
+| 10 Repo-scope gates | Adds repo-scope tokens | declared |
 
-Full detail in `SPEC.md` §7.
+**Four things the process does that the model does not.** Step 1's cached prefix does not lower `k` or raise
+`p` — those tables key on Steps 5 and 2–3 only. Step 4 has no effect at all. The restructuring reserve is
+unconditional rather than fired by Step 10, so even scenario A carries one. And Step 9's WIP cap is nowhere
+in the code. `SPEC.md` §7 has the full detail, including why `rho` and `f` are hand-entered per scenario
+rather than derived from the steps that are supposed to set them.
 
 ---
 
@@ -201,6 +233,7 @@ Full detail in `SPEC.md` §7.
 ```
 params.py             every constant and calibrated value — the only place numbers live
 scenarios.py          the ten steps, and which parameters each scenario's steps select
+escape.py             the escape equation and its mean-preserving scalings
 model.py              one vectorised pass: portfolio -> cost, all iterations at once
 montecarlo.py         percentiles, variance decomposition, sensitivity sweeps
 report.py             formatting only, no computation, no NumPy arrays
@@ -210,8 +243,10 @@ tests/                acceptance suite, property tests, two differential referen
 ```
 
 Plain functions and dicts throughout — no classes anywhere, checked mechanically by
-`tests/test_deps.py`. Dependency direction is strictly one way, params -> scenarios -> model
--> montecarlo -> report -> `__main__`, also checked mechanically.
+`tests/test_deps.py`. Dependency direction is strictly one way, params -> scenarios -> escape
+-> model -> montecarlo -> report -> `__main__`, also checked mechanically. Read it as "may
+import from anything to its left" rather than as a call chain: `report.py` imports the
+registry modules for its listings and never imports `montecarlo`.
 
 `CLAUDE.md` is the architectural constitution — read it before changing anything. `SPEC.md` is the model
 specification and the source the acceptance suite is derived from: **if the tests and the code disagree, fix
@@ -250,13 +285,19 @@ attempt expectation summed term by term and the fallback probability found by en
 outcomes. It is structurally unlike the vectorised implementation, so the two are unlikely to share a bug.
 
 `reference_model.py` is the *supplied* reference that generated the published figures — a second independent
-implementation with its own draw order. The deterministic pass agrees with it on all 70 figures across all
-five scenarios to 1.8e-16; the Monte Carlo percentiles agree to within 1.2%, which is sampling error rather
-than disagreement, since the two consume their random streams in different orders.
+implementation with its own draw order. The deterministic pass agrees with it on all 80 figures across all
+five scenarios, to a worst relative deviation of 1.8e-16.
+
+The Monte Carlo percentiles agree less tightly, and for two reasons that should not be run together. In A and
+B the two are the same model and diverge by under 1.0% — pure sampling error, since they consume their
+streams in different orders. In C, D and D+ this build reads up to 1.6% higher, and that part is *not* error:
+the supplied reference predates the `SPEC.md` §5 covariance correction, so its escape rate runs 2–3% below
+its own derived `e`. The test asserts that the reference really does carry that defect rather than assuming
+it, so the looser bound stays justified.
 
 Neither catches the one error vectorisation really invites — drawing the common factor per story rather than
 per iteration, which produces plausible numbers and quietly removes the correlation. That is caught by
-measuring over-dispersion: escape counts run 2.9x to 21.7x the binomial variance when `theta` is shared, and
+measuring over-dispersion: escape counts run 3.0x to 22.4x the binomial variance when `theta` is shared, and
 1.00x when it is not.
 
 If a change moves a pinned figure, that is either a bug or a decision — record it in `SPEC.md` §11.

@@ -1,10 +1,14 @@
 # Model Review — Defect Register
 
-**STATUS: ALL TWELVE DEFECTS CLOSED.** The corrections are in `SPEC.md`, `CLAUDE.md`, `README.md`,
-`cio-briefing-v6.md`, `cost-model-simplified.md` and `agentic-coding-estimation-model.md`. Every published
-figure has been regenerated from a corrected reference implementation rather than adjusted by hand. This
-register is retained as the record of what was wrong and why, and the findings below are stated in the past
-tense of the defect, not of the current documents.
+**STATUS: ALL SIXTEEN DEFECTS CLOSED** — S1-1 to S1-4, S2-1 to S2-5, S3-1 to S3-5, S4-1 and S4-2. The
+corrections are in `SPEC.md`, `CLAUDE.md`, `README.md`, and in the briefing set — `cio-briefing-v6.md`,
+`cost-model-simplified.md` and `agentic-coding-estimation-model.md`, which live outside this repository.
+Every published figure has been regenerated from a corrected reference implementation rather than adjusted by
+hand. This register is retained as the record of what was wrong and why, and the findings below are stated in
+the past tense of the defect, not of the current documents.
+
+**Four further defects were found after this review**, during and after the build, and are registered at the
+end of this file. This document is not the whole defect history; `SPEC.md` §11 is.
 
 **What the repairs changed, in summary:**
 
@@ -14,9 +18,13 @@ tense of the defect, not of the current documents.
 | Scenario D, P50 / P95 | $69,600 / $115,100 | $68,800 / $120,000 |
 | Scenario A, P50 | (not reported) | $197,600 |
 | Headline comparison | D's P95 below A's *point estimate* | **D's P95 below A's *median*** |
-| Variance decomposition | escape 45 / batching 20 / criteria 19 / spec 9 / tokens 7 | **escape ~72%, all else under 2%, not a partition** |
+| Variance decomposition | escape 45 / batching 20 / criteria 19 / spec 9 / tokens 7 | **escape 44–77% by scenario, `S` 9% in C and D+, everything else unresolved, not a partition** |
 | D+ | more expensive, full stop | **more expensive at P50, cheaper at P95** |
 | Tokens, A → D | 1.15B → 3.51B | 0.96B → 3.69B |
+
+The "After" column quotes the published figures, which are what `tests/fixtures/` pins. The built model's own
+output sits within the fixture tolerance of each: D P50 $69,097 and P95 $121,930 at 40,000 iterations and
+seed 7. `SPEC.md` §6 now carries both columns.
 
 Every conclusion survived. Two got stronger: the headline comparison now beats a median rather than a point
 estimate, and D+ acquired a rationale it did not previously have.
@@ -349,7 +357,7 @@ Worth stating, because most of it does.
   the right structure, and it is what made S2-4 findable at all.
 - **The correlation structure is right in its essentials**: one common factor per run, loading on the gate
   rather than on generation, with the dollar asymmetry ($2,100 versus $18,000) correctly motivating it.
-- **The conclusions are robust to every defect above.** Fixing all twelve moves scenario D by roughly
+- **The conclusions are robust to every defect above.** Fixing all sixteen moves scenario D by roughly
   $2,000 to $4,000 on a $69,600 base, widens the P95, and leaves the ordering, the token-share argument and
   the headline comparison — D's P95 below A's point estimate — intact.
 
@@ -374,7 +382,7 @@ Worth stating, because most of it does.
 
 | Defect | Resolution |
 |---|---|
-| S1-1 escape scaling not mean-preserving | `exp(λθ − λ²/2)` and off-branch multiplier `(1 − p·mult)/(1 − p)`. Simulated mean `e` now matches derived `e` to within Monte Carlo error in every scenario; mandatory property test specified |
+| S1-1 escape scaling not mean-preserving | `exp(λθ − λ²/2)` and off-branch multiplier `(1 − p·mult)/(1 − p)`. Mandatory property test specified. **Incomplete as written**: centring each factor left their *product* biased, because both are functions of `theta`. Closed by the `gamma` correction — see S1-5 below |
 | S1-2 attempts per story vs per implementation | Independent `A` and `L` per implementation. Epic token CV 7.1% → **4.1%** |
 | S1-3 D+ irreconcilable | Apparatus restated: oracle 4,460M, crosstest 768M, integration 200M, repo-scope 1,850M. Generation 2,557M + apparatus 7,878M = **10,435M**, matching the pinned 10.44B |
 | S1-4 truncation ignored | `E[A] = Σ (1−p)^k for k < A_max` everywhere. Fallback recomputed properly: **0.4 stories in D**, 6.4 in A; the 10% figure relabelled a stress case |
@@ -383,10 +391,93 @@ Worth stating, because most of it does.
 | S2-3 restructuring reserve absent | Included at 5% of the criteria/review/spec/architecture base |
 | S2-4 undefined quantities | `fallback_hours` = 8.0, `adjudication_rate` = 0.40 (Step 7 scenarios only), `restructure_fraction` = 0.05 |
 | S2-5 `N_impl` buys nothing | Stated explicitly, with the best-of-N extension named and deliberately declined |
-| S3-1 variance decomposition | `d`, `m`, `q_rev`, `S` and a global `k` scale given distributions; decomposition recomputed on genuinely random sources only, with "does not sum to 100%" stated |
+| S3-1 variance decomposition | `d`, `m`, `q_rev`, `S` and a global `k` scale given distributions; decomposition recomputed on genuinely random sources only, with "does not sum to 100%" stated. Extended since: every share now carries the standard error of its own estimator by paired bootstrap, unresolved sources are named rather than quoted, and the table is stated per scenario — see S2-6 and S3-6 below |
 | S3-2 deterministic ≠ P50 | Deterministic pass pinned separately; it lands near the mean, above the median |
 | S3-3 human review double-counted | Removed from the `ρ` menu; enters only through `q_rev` |
 | S3-4 ρ̂ survivor | Sentence deleted and replaced with the chosen-not-measured statement |
 | S3-5 superadditivity null | Multiplicative null 54%, D 66%, **synergy +12 points** |
 | S4-1 heading collision | Subsections renumbered 1–9 |
 | S4-2 CV overgeneralised | Restated per class: Routine 0.5, Standard 0.7, Hard 0.9 |
+
+---
+
+## Defects found after this review
+
+Registered here so this file remains the defect register of record. Each is logged in full, with its effect
+on the pinned figures, in `SPEC.md` §11; the summaries below are pointers, not the primary record. All four
+are closed.
+
+### S1-5 — The covariance between `e_base` and `e_scale`: the third mean error, of the S1-1 family
+
+**Found:** 2026-08-17, while implementing S1-1. **Severity S1.**
+
+S1-1 centred each random factor on `e` individually and stopped there. That is not sufficient, because
+`e_base` and `e_scale` are both functions of the same `theta` and are negatively correlated through it — a
+rising `theta` lowers `f_run`, which sends more stories to review and lowers `e_base`, while raising
+`e_scale`. So `E[e_base × e_scale] < E[e_base] × E[e_scale] = e`. Measured by Gauss–Hermite quadrature at
+2.71% low in C and 1.95% low in D and D+; A and B are exact, because `f` = 0 leaves no covariance.
+
+The direction is conservative — the simulation escaped *less* than its own derivation claimed, so it
+understated cost — which is why nothing failed loudly. It is the same defect as S1-1 with a smaller
+coefficient and the opposite sign, and this review missed it.
+
+**Closed** by a scalar `gamma = target / shifted`, evaluated once per scenario: Cameron–Martin turns
+`E[g(Z)exp(λ_e Z − λ_e²/2)]` into `E[g(Z + λ_e)]`, so the exponential leaves the integrand and no quadrature
+is needed in the hot loop. `gamma` is 1.0000 in A and B, 1.0278 in C, 1.0199 in D and D+, and it removes the
+`f` Jensen term at the same time. Pinned deterministically to 1e-10 by a test that recomputes it a different
+way, and end to end to 0.5% at 200,000 iterations.
+
+### S1-6 — The variance decomposition froze the escape source at its median rather than its mean
+
+**Found:** 2026-08-17. **Severity S1**, for a reported quantity rather than a cost.
+
+Freezing the escape source by setting `theta = 0` leaves `e_scale = exp(−λ_e²/2)` = 0.860, which is its
+median and not its mean. The freeze therefore moved the escape *level* down 14% as well as removing its
+spread, and so contaminated the very reduction it was measuring. Same mean-versus-median family as S1-1 and
+S1-5. **Closed** by setting `e_scale = 1` and `gamma = 1` explicitly when the source is frozen.
+
+### S2-6 — Broken common random numbers put a noise floor under the decomposition larger than every share it measured
+
+**Found:** 2026-08-17. **Severity S2.**
+
+Two causes, both silent. NumPy's `Generator.geometric` consumes a *variable* number of stream positions as
+`p` varies, and `Generator.binomial` switches algorithm around `n·p` = 30 and does likewise, so a perturbed
+draw desynchronised every draw after it and the "frozen" run differed from the baseline in every source. And
+the chunked run used one continuous stream, so residual desynchronisation in chunk *k* corrupted every later
+chunk: measured coupling was exactly `1/n_chunks`, meaning at three chunks two thirds of the run was
+uncorrelated noise. The tell was that freezing `d` visibly moved criteria hours and generation tokens, which
+`d` cannot affect.
+
+**Closed** by inverse-CDF draws for the geometric and for the reviewed and escaped counts, one generator per
+draw site, and independent seeding per chunk from `(seed, chunk_index)`. Noise floor ±2.0 → ±0.8 percentage
+points at 40,000 iterations. The escape share moved 71.6% → 71.0%, the difference being noise that had been
+read as signal.
+
+### S3-6 — The decomposition was quoted for one scenario and generalised to the model
+
+**Found:** 2026-08-17, by running the full report rather than by inspection. **Severity S3.**
+
+Escape dominates everywhere, but it ranges from 44% to 77%, and in C and D+ it falls to 44–47% while criteria
+authoring `S` resolves as a clear second driver at 9%. C carries the unaided `S_manual` = 3.0, making
+criteria its largest cost line at about $69,800; D+ has the lowest escape rate in the set at 0.89%, so the
+same spread in `S` is a larger share of a smaller total. A reader shown only scenario D — which is what the
+documents showed — would conclude there was nothing left to attack. **Closed**: the table is stated per
+scenario in `SPEC.md` §5 and `README.md`, and pinned by `test_the_decomposition_is_scenario_dependent`.
+
+---
+
+## Still open
+
+Not defects in the sense above — the model does what it says — but gaps between the process being modelled
+and the model, recorded in `SPEC.md` §7 and §9 rather than fixed:
+
+- **Four rows of the ten-step mapping are not implemented.** Step 1's effect on `k` and `p`, the adjudication
+  touch's attribution to Step 3, the restructuring reserve's attribution to Step 10, and Step 9's WIP cap.
+- **`rho` and `f_base` are declared per scenario, not derived from the active steps**, so the entire value of
+  the verification apparatus arrives as a hand-entered number, and an arbitrary combination of steps cannot
+  be priced without editing `scenarios.py`.
+- **The apparatus is priced as it runs, never as it is built.** No cost term covers standing the process up,
+  and no split separates the first epic from the tenth.
+- **Three parameters cannot be swept over their own declared range** — `q_rev`, `p_cluster`, `cluster_mult` —
+  because `params.validate()` rejects points inside it and the CLI does not expose `sensitivity()`'s bounds.
+- **Type hints are missing on the arithmetic functions** in `escape.py` and `model.py`, against CLAUDE.md §10.
